@@ -1,0 +1,19 @@
+{
+  "name": "anthill-collab",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/server.ts",
+    "start": "bun src/server.ts"
+  },
+  "dependencies": {
+    "@hocuspocus/server": "^3.4.4",
+    "@supabase/supabase-js": "^2.104.1",
+    "yjs": "^13.6.30"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.3"
+  }
+}
