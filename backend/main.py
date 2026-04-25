@@ -308,6 +308,13 @@ async def get_paper(arxiv_id: str) -> PaperResponse:
     return PaperResponse(arxiv_id=arxiv_id, title=title, chunks=chunks)
 
 
+# Mount the agent runtime. Done after `require_secret` is defined so the
+# routes module can pull it in without a circular import.
+from agents.routes import router as agents_router  # noqa: E402
+
+app.include_router(agents_router)
+
+
 def main() -> None:
     import uvicorn
 
