@@ -1,9 +1,16 @@
+import type { Metadata } from "next"
 import { Geist, Geist_Mono } from "next/font/google"
 
 import "./globals.css"
 import { ThemeProvider } from "@/components/theme-provider"
 import { TRPCProvider } from "@/components/trpc-provider"
 import { cn } from "@/lib/utils";
+
+export const metadata: Metadata = {
+  title: "Anthill — Research, collaboratively explored",
+  description:
+    "A collaborative workspace for writing research papers with autonomous agents.",
+}
 
 const geist = Geist({subsets:['latin'],variable:'--font-sans'})
 
