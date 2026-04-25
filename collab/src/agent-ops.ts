@@ -212,6 +212,52 @@ export function applyOps(
             pendingTitle = op.title;
             break;
           }
+          case 'appendInline': {
+            const found = getBlockByRef(fragment, op.ref);
+            if (!found) {
+              throw new BridgeOpError(
+                'BLOCK_REF_NOT_FOUND',
+                `ref ${op.ref} not found`,
+                { ref: op.ref },
+              );
+            }
+            const stamped = stampProvenance(op.element, identity);
+            appendInlineElements(found.element, [stamped]);
+            found.element.setAttribute(
+              'proofTouchedBy',
+              `ai:${identity.agentId}`,
+            );
+            if (identity.runId) {
+              found.element.setAttribute('proofRunId', identity.runId);
+            }
+            break;
+          }
+          case 'addNote': {
+            const insertAt = positionAfterRef(fragment, op.anchorRef);
+            if (insertAt === null) {
+              throw new BridgeOpError(
+                'BLOCK_REF_NOT_FOUND',
+                `anchorRef ${op.anchorRef} not found`,
+                { ref: op.anchorRef },
+              );
+            }
+            const noteBlock: PlateBlock = {
+              type: 'blockquote',
+              noteKind: op.kind,
+              noteAnchorRef: op.anchorRef,
+              noteAuthor: `ai:${identity.agentId}`,
+              ...(identity.runId ? { noteRunId: identity.runId } : {}),
+              ...(op.rationale ? { noteRationale: op.rationale } : {}),
+              ...(op.replacement ? { noteReplacement: op.replacement } : {}),
+              children: [{ text: op.body }],
+            };
+            const anchorOrdinal = ordinalOfRef(op.anchorRef);
+            fragment.insert(insertAt, [
+              plateBlockToYText(stampProvenance(noteBlock, identity)),
+            ]);
+            newRefs.push(`b${anchorOrdinal + 1}`);
+            break;
+          }
           default:
             throw new BridgeOpError(
               'BAD_REQUEST',
@@ -338,6 +384,57 @@ function validateOps(ops: EditOp[]): void {
           throw new BridgeOpError(
             'BAD_REQUEST',
             `ops[${i}] setTitle requires a non-empty 'title'`,
+            { index: i },
+          );
+        }
+        break;
+      case 'appendInline':
+        if (typeof op.ref !== 'string' || !op.ref) {
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] appendInline requires a 'ref'`,
+            { index: i },
+          );
+        }
+        if (
+          !op.element ||
+          typeof op.element !== 'object' ||
+          typeof op.element.type !== 'string'
+        ) {
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] appendInline requires an 'element' with a string type`,
+            { index: i },
+          );
+        }
+        if (!Array.isArray(op.element.children)) {
+          // Inline void elements still need a children array (e.g. [{text: ''}]).
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] appendInline element must have a 'children' array`,
+            { index: i },
+          );
+        }
+        break;
+      case 'addNote':
+        if (typeof op.anchorRef !== 'string' || !op.anchorRef) {
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] addNote requires an 'anchorRef'`,
+            { index: i },
+          );
+        }
+        if (op.kind !== 'comment' && op.kind !== 'suggestion') {
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] addNote 'kind' must be 'comment' or 'suggestion'`,
+            { index: i },
+          );
+        }
+        if (typeof op.body !== 'string' || !op.body.trim()) {
+          throw new BridgeOpError(
+            'BAD_REQUEST',
+            `ops[${i}] addNote requires a non-empty 'body'`,
             { index: i },
           );
         }

@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from . import literature_search
+from . import (
+    add_comment,
+    citation_inserter,
+    insert_citation,
+    literature_search,
+    suggest_edit,
+    summarize_selection,
+)
 from .store import RunStore, get_store
 from .tracing import Tracer
 from .types import (
@@ -24,6 +31,11 @@ from .types import (
 AgentFn = Callable[[dict[str, Any], Tracer], Awaitable[dict[str, Any]]]
 AGENTS: dict[str, AgentFn] = {
     "literature_search": literature_search.run,
+    "insert_citation": insert_citation.run,
+    "add_comment": add_comment.run,
+    "suggest_edit": suggest_edit.run,
+    "summarize_selection": summarize_selection.run,
+    "citation_inserter": citation_inserter.run,
 }
 
 

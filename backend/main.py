@@ -40,6 +40,11 @@ class Settings(BaseSettings):
     default_k: int = 8
     max_k: int = 50
 
+    # Agent bridge: where the collab server exposes its HTTP edit API.
+    # Agents on this backend POST to it to mutate the live Yjs document.
+    bridge_url: str = "http://localhost:8889"
+    bridge_token: str = ""
+
     n_ctx: int = 0
     n_batch: int = 2048
     n_ubatch: int = 2048

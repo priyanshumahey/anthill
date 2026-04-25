@@ -98,6 +98,45 @@ export interface SetTitleOp {
   title: string;
 }
 
+/**
+ * Append an inline element (citation, mention, ...) to the end of an
+ * existing block. The element is a normal Plate inline node — at minimum
+ * `{ type, children: [{ text: '' }] }` plus arbitrary attribute keys
+ * (e.g. `arxivId`, `chunkIndex`, `score`, `title`, `snippet`, `query`).
+ *
+ * Used by the citation_inserter agent to drop a citation badge into a
+ * paragraph after running semantic search on it.
+ */
+export interface AppendInlineOp {
+  type: 'appendInline';
+  ref: string;
+  element: PlateBlock;
+}
+
+/**
+ * Insert a "note" block right after a referenced anchor block. Notes are
+ * persisted as Plate `blockquote`s carrying extra attributes the editor
+ * uses to render them as comments or suggested edits:
+ *
+ *   `noteKind`: 'comment' | 'suggestion'
+ *   `noteAnchorRef`: ref of the block this note attaches to (at insert time)
+ *   `noteAuthor`: agent id (auto-stamped)
+ *   `noteRationale?`: free-text explanation (suggestions)
+ *   `noteReplacement?`: proposed replacement text (suggestions)
+ *
+ * One op covers both `addComment` and `suggestEdit` because their CRDT
+ * shape is identical — only the kind/payload differs, and routing them
+ * through one op keeps the bridge surface small.
+ */
+export interface AddNoteOp {
+  type: 'addNote';
+  anchorRef: string;
+  kind: 'comment' | 'suggestion';
+  body: string;
+  rationale?: string;
+  replacement?: string;
+}
+
 export type EditOp =
   | AppendBlocksOp
   | InsertBlocksAfterOp
@@ -105,7 +144,9 @@ export type EditOp =
   | ReplaceBlockOp
   | DeleteBlockOp
   | SetBlockTextOp
-  | SetTitleOp;
+  | SetTitleOp
+  | AppendInlineOp
+  | AddNoteOp;
 
 export const EDIT_OP_TYPES = [
   'appendBlocks',
@@ -115,6 +156,8 @@ export const EDIT_OP_TYPES = [
   'deleteBlock',
   'setBlockText',
   'setTitle',
+  'appendInline',
+  'addNote',
 ] as const;
 
 export interface EditRequest {

@@ -291,6 +291,192 @@ describe('agent bridge HTTP', () => {
     expect(r.status).toBe(200);
   });
 
+  test('appendInline adds a citation to an existing block', async () => {
+    // Append a fresh paragraph we can safely cite.
+    const append = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'cite-anchor' },
+      body: {
+        ops: [
+          {
+            type: 'appendBlocks',
+            blocks: [
+              {
+                type: 'p',
+                children: [{ text: 'Transformers dominate sequence modelling tasks.' }],
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const anchorRef = append.body.newRefs[0]!;
+
+    const cite = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'cite-insert' },
+      body: {
+        ops: [
+          {
+            type: 'appendInline',
+            ref: anchorRef,
+            element: {
+              type: 'citation',
+              arxivId: '1706.03762',
+              chunkIndex: 0,
+              title: 'Attention Is All You Need',
+              score: 0.92,
+              children: [{ text: '' }],
+            },
+          },
+        ],
+      },
+    });
+    expect(cite.status).toBe(200);
+    expect(cite.body.applied).toBe(1);
+
+    const snap = await call<SnapshotResponse>(`/documents/${KNOWN_DOC_ID}/snapshot`);
+    const block = snap.body.blocks.find((b) => b.ref === anchorRef);
+    expect(block?.inlines?.[0]?.type).toBe('citation');
+    expect(block?.inlines?.[0]?.label).toBe('[cite:arXiv:1706.03762]');
+  });
+
+  test('appendInline on a missing ref returns 404', async () => {
+    const r = await call<{ error: string }>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'cite-bad-ref' },
+      body: {
+        ops: [
+          {
+            type: 'appendInline',
+            ref: 'b9999',
+            element: { type: 'citation', children: [{ text: '' }] },
+          },
+        ],
+      },
+    });
+    expect(r.status).toBe(404);
+    expect(r.body.error).toBe('BLOCK_REF_NOT_FOUND');
+  });
+
+  test('addNote inserts a comment block right after the anchor', async () => {
+    const append = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'note-anchor' },
+      body: {
+        ops: [
+          {
+            type: 'appendBlocks',
+            blocks: [{ type: 'p', children: [{ text: 'Anchor for a comment.' }] }],
+          },
+        ],
+      },
+    });
+    const anchorRef = append.body.newRefs[0]!;
+
+    const note = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'note-insert' },
+      body: {
+        ops: [
+          {
+            type: 'addNote',
+            anchorRef,
+            kind: 'comment',
+            body: 'Consider adding a citation for this claim.',
+          },
+        ],
+      },
+    });
+    expect(note.status).toBe(200);
+    expect(note.body.newRefs).toHaveLength(1);
+
+    const snap = await call<SnapshotResponse>(`/documents/${KNOWN_DOC_ID}/snapshot`);
+    const noteRef = note.body.newRefs[0]!;
+    const inserted = snap.body.blocks.find((b) => b.ref === noteRef);
+    expect(inserted?.type).toBe('blockquote');
+    expect(inserted?.attrs.noteKind).toBe('comment');
+    expect(inserted?.attrs.noteAnchorRef).toBe(anchorRef);
+    expect(inserted?.text).toBe('Consider adding a citation for this claim.');
+  });
+
+  test('addNote rejects unknown kind and missing body', async () => {
+    const append = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'note-anchor-2' },
+      body: {
+        ops: [
+          {
+            type: 'appendBlocks',
+            blocks: [{ type: 'p', children: [{ text: 'Anchor 2.' }] }],
+          },
+        ],
+      },
+    });
+    const anchorRef = append.body.newRefs[0]!;
+
+    const badKind = await call<{ error: string }>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'note-bad-kind' },
+      body: { ops: [{ type: 'addNote', anchorRef, kind: 'bogus', body: 'x' }] },
+    });
+    expect(badKind.status).toBe(400);
+
+    const badBody = await call<{ error: string }>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'note-bad-body' },
+      body: { ops: [{ type: 'addNote', anchorRef, kind: 'comment', body: '' }] },
+    });
+    expect(badBody.status).toBe(400);
+  });
+
+  test('addNote suggestion stores rationale + replacement attrs', async () => {
+    const append = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'sug-anchor' },
+      body: {
+        ops: [
+          {
+            type: 'appendBlocks',
+            blocks: [{ type: 'p', children: [{ text: 'Original phrasing.' }] }],
+          },
+        ],
+      },
+    });
+    const anchorRef = append.body.newRefs[0]!;
+
+    const sug = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
+      method: 'POST',
+      headers: { 'idempotency-key': 'sug-insert' },
+      body: {
+        ops: [
+          {
+            type: 'addNote',
+            anchorRef,
+            kind: 'suggestion',
+            body: 'Tighten the wording.',
+            rationale: 'Tighten the wording.',
+            replacement: 'Sharper phrasing.',
+          },
+        ],
+      },
+    });
+    expect(sug.status).toBe(200);
+
+    const snap = await call<SnapshotResponse>(`/documents/${KNOWN_DOC_ID}/snapshot`);
+    const noteRef = sug.body.newRefs[0]!;
+    const inserted = snap.body.blocks.find((b) => b.ref === noteRef);
+    expect(inserted?.attrs.noteKind).toBe('suggestion');
+    expect(inserted?.attrs.noteRationale).toBe('Tighten the wording.');
+    expect(inserted?.attrs.noteReplacement).toBe('Sharper phrasing.');
+  });
+
+  test('discovery doc lists the new ops', async () => {
+    const r = await call<{ ops: string[] }>('/.well-known/agent.json', { noAuth: true });
+    expect(r.body.ops).toContain('appendInline');
+    expect(r.body.ops).toContain('addNote');
+  });
+
   test('mutations broadcast via Y.Doc to a connected client', async () => {
     if (!server) throw new Error('server not started');
     const hp = (server as { hocuspocus: import('@hocuspocus/server').Hocuspocus }).hocuspocus;
