@@ -11,13 +11,23 @@
  *     reads/writes the Next.js app makes; the Yjs WebSocket is auxiliary.
  *
  * Tighten before production by validating a JWT minted server-side.
+ *
+ * Alongside Hocuspocus, this process also starts the **agent bridge** —
+ * an HTTP surface external agents (Claude Code, Copilot, our own backend
+ * agents) use to read snapshots and apply block-level edits to live
+ * docs. See `src/agent-bridge.ts`. Mutations there flow through the same
+ * Y.Doc Hocuspocus owns, so connected browsers see edits immediately.
  */
 
 import { Server } from '@hocuspocus/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import * as Y from 'yjs';
 
+import { AgentBridge } from './agent-bridge';
+
 const PORT = Number(process.env.COLLAB_PORT) || 8888;
+const BRIDGE_PORT = Number(process.env.AGENT_BRIDGE_PORT) || 8889;
+const BRIDGE_SECRET = process.env.ANTHILL_AGENT_BRIDGE_SECRET ?? '';
 
 function getSupabaseAdmin(): SupabaseClient {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -144,3 +154,17 @@ const server = new Server({
 });
 
 server.listen();
+
+// ──────────────────────────────────────────────────────────────────
+// Agent bridge — HTTP surface for external agents.
+// Shares the same Hocuspocus instance so mutations broadcast to all
+// connected editors and persist via the same hooks above.
+// ──────────────────────────────────────────────────────────────────
+
+const bridge = new AgentBridge({
+  port: BRIDGE_PORT,
+  hocuspocus: server.hocuspocus,
+  supabase: getSupabaseAdmin(),
+  auth: { sharedSecret: BRIDGE_SECRET, enforceIdentity: true },
+});
+bridge.start();
