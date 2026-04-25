@@ -21,8 +21,6 @@ from .types import (
     TERMINAL_STATUSES,
 )
 
-# Agent registry: name -> async run(input, tracer) -> result dict.
-# Adding a new agent is one line here + a module like `literature_search.py`.
 AgentFn = Callable[[dict[str, Any], Tracer], Awaitable[dict[str, Any]]]
 AGENTS: dict[str, AgentFn] = {
     "literature_search": literature_search.run,
@@ -46,11 +44,7 @@ class AgentsListResponse(BaseModel):
     agents: list[AgentInfo]
 
 
-# ---------- background runner ----------
-
-
 async def _execute(run: AgentRun, tracer: Tracer, store: RunStore) -> None:
-    """Drive a single run through its lifecycle and close the channel at the end."""
     fn = AGENTS[run.agent]
     try:
         await tracer.status(RunStatus.running, "Running")
@@ -69,12 +63,10 @@ async def _execute(run: AgentRun, tracer: Tracer, store: RunStore) -> None:
             await ch.close()
 
 
-# Secret check: lazy import of `main.get_settings` so this module stays
-# importable even when `main` is mid-init (e.g. during tests).
 async def _require_secret(
     x_anthill_secret: str | None = Header(default=None, alias="X-Anthill-Secret"),
 ) -> None:
-    from main import get_settings  # local import on purpose
+    from main import get_settings
 
     expected = get_settings().shared_secret
     if not expected:
@@ -90,9 +82,6 @@ router = APIRouter(
     tags=["agents"],
     dependencies=[Depends(_require_secret)],
 )
-
-
-# ---------- endpoints ----------
 
 
 @router.get("", response_model=AgentsListResponse)
@@ -148,9 +137,6 @@ async def cancel_run(run_id: str, store: RunStore = Depends(get_store)) -> Agent
     return run
 
 
-# ---------- SSE stream ----------
-
-
 def _sse(event: RunEvent) -> bytes:
     payload = event.model_dump(mode="json")
     return f"id: {event.seq}\nevent: {event.kind}\ndata: {json.dumps(payload)}\n\n".encode()
@@ -169,7 +155,6 @@ async def stream_events(
     if ch is None:
         raise HTTPException(status_code=404, detail="run channel not found")
 
-    # Subscribe BEFORE snapshotting so we don't lose events emitted in the gap.
     queue = ch.subscribe()
     snapshot = list(ch.events)
     seen: set[int] = {ev.seq for ev in snapshot}
@@ -179,7 +164,6 @@ async def stream_events(
             for ev in snapshot:
                 yield _sse(ev)
 
-            # If the run already finished and the channel is closed, we're done.
             if run.status in TERMINAL_STATUSES and ch.closed:
                 return
 
@@ -202,8 +186,6 @@ async def stream_events(
                     and ev.data
                     and ev.data.get("status") in TERMINAL_STATUS_VALUES
                 ):
-                    # Drain any remaining events the runner may emit before close,
-                    # then exit on the channel close signal.
                     continue
         finally:
             ch.unsubscribe(queue)

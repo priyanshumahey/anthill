@@ -1,12 +1,3 @@
-"""Literature search agent.
-
-Given a topic, plans a few sub-queries (LLM-expanded if `OPENAI_API_KEY` is
-set, otherwise just the raw query), optionally discovers + ingests new arXiv
-papers into the corpus, then runs each sub-query through the local Harrier +
-Chroma corpus, dedupes per `arxiv_id`, ranks by best chunk score, and emits
-findings as it goes so the UI can stream them.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -32,11 +23,6 @@ _HARD_DISCOVER_CAP = 15
 
 
 async def _expand_queries(query: str, n: int) -> list[str]:
-    """Use OpenAI to fan the topic out into distinct sub-queries.
-
-    Falls back to `[query]` if no key is configured or the call fails — the
-    agent still works, just with one search pass.
-    """
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key:
         return [query]
@@ -80,8 +66,6 @@ async def _expand_queries(query: str, n: int) -> list[str]:
 
 
 async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
-    # Imported lazily so this module does not depend on `main` at import time
-    # (main mounts our router during its own initialization).
     from main import _embed, _get_collection  # type: ignore[import-not-found]
 
     query = str(input.get("query") or "").strip()
@@ -98,7 +82,6 @@ async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
     )
     discover_query = str(input.get("discover_query") or query).strip()
 
-    # Step 1 — plan
     await tracer.step("plan", f"Planning sub-queries for: {query}", expand=expand)
     sub_queries = await _expand_queries(query, plan_n) if expand else [query]
     await tracer.step(
@@ -109,7 +92,6 @@ async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
 
     collection = await asyncio.to_thread(_get_collection)
 
-    # Step 2 — discover + ingest new papers from arXiv (optional)
     newly_indexed: set[str] = set()
     ingested_papers: list[dict[str, Any]] = []
     if discover and discover_max > 0:
@@ -120,7 +102,6 @@ async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
             max=discover_max,
         )
         try:
-            # Pull a few extras so dedupe doesn't starve us.
             candidates = await ingest.discover_candidates(
                 discover_query, max_results=discover_max * 3
             )
@@ -198,7 +179,6 @@ async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
             "ingested": ingested_papers,
         }
 
-    # Step 3 — search each sub-query
     by_arxiv: dict[str, dict[str, Any]] = {}
     for sq in sub_queries:
         await tracer.step("search", f"Searching: {sq}", query=sq)
@@ -244,11 +224,9 @@ async def run(input: dict[str, Any], tracer: Tracer) -> dict[str, Any]:
             total_unique=len(by_arxiv),
         )
 
-    # Step 4 — rank & truncate
     ranked = sorted(by_arxiv.values(), key=lambda h: h["score"], reverse=True)[:max_results]
     await tracer.step("rank", f"Ranked {len(ranked)} candidate papers", count=len(ranked))
 
-    # Stream findings one-by-one so the UI can populate as they arrive.
     for rank, hit in enumerate(ranked, start=1):
         await tracer.finding(rank=rank, **hit)
 

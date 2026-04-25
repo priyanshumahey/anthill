@@ -7,12 +7,6 @@ from .types import AgentRun, RunEvent, RunStatus, TERMINAL_STATUSES, utcnow
 
 
 class Tracer:
-    """The sole interface an agent uses to update its run.
-
-    Mutates the `AgentRun` in place AND emits a matching event so subscribers
-    see the same state. Agents must not touch `run.status` directly.
-    """
-
     def __init__(self, store: RunStore, run: AgentRun) -> None:
         self.store = store
         self.run = run
@@ -28,7 +22,7 @@ class Tracer:
             return
         await ch.emit(
             RunEvent(
-                seq=0,  # assigned inside the channel
+                seq=0,
                 run_id=self.run.id,
                 at=utcnow(),
                 kind=kind,

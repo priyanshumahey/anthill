@@ -7,13 +7,6 @@ from .types import AgentRun, RunEvent
 
 
 class RunChannel:
-    """Per-run ring buffer of past events plus a fan-out to live subscribers.
-
-    `emit` is the only writer; it assigns the sequence number, appends to the
-    buffer, and pushes to every subscribed queue. Subscribers receive `None`
-    after `close()` so they know the stream is over.
-    """
-
     def __init__(self, max_events: int = 2048) -> None:
         self.events: deque[RunEvent] = deque(maxlen=max_events)
         self._subscribers: set[asyncio.Queue[RunEvent | None]] = set()
@@ -30,7 +23,6 @@ class RunChannel:
                 try:
                     q.put_nowait(event)
                 except asyncio.QueueFull:
-                    # Slow subscriber — drop. They can re-fetch via the snapshot.
                     pass
         return event
 
@@ -57,13 +49,6 @@ class RunChannel:
 
 
 class RunStore:
-    """In-process registry of runs + their channels + their asyncio tasks.
-
-    This is intentionally simple. When we need cross-process visibility (or
-    survival across restarts) we'll back it with Postgres. The interface stays
-    the same.
-    """
-
     def __init__(self) -> None:
         self.runs: dict[str, AgentRun] = {}
         self.channels: dict[str, RunChannel] = {}

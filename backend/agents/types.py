@@ -31,12 +31,6 @@ TERMINAL_STATUS_VALUES: frozenset[str] = frozenset(s.value for s in TERMINAL_STA
 
 
 class RunEvent(BaseModel):
-    """A single point on the agent's trace.
-
-    `kind` is one of: status | log | step | finding | error.
-    `data` is free-form per kind; clients should treat unknown kinds as `log`.
-    """
-
     seq: int
     run_id: str
     at: datetime
