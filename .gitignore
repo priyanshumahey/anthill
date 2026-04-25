@@ -3,3 +3,10 @@ __pycache__
 .venv
 temp/
 node_modules/
+
+# Local-only docs
+/PLAN.md
+/README.md
+
+# External SDK checkout (managed separately)
+/proof-sdk/
