@@ -1,27 +1,7 @@
-/**
- * Auth + identity extraction for the agent bridge.
- *
- * Tier 1 (v1):
- *   - Shared secret via `X-Agent-Token` header. Set
- *     `ANTHILL_AGENT_BRIDGE_SECRET=<random>` in the collab server env. If
- *     the secret is empty, the bridge runs in "open" mode and accepts any
- *     request (dev only — logged loudly at startup).
- *   - Agent identity from `X-Agent-Id` header. Required for every
- *     mutation route so provenance can be attributed.
- *   - Optional `X-Agent-Run-Id` header — backend run id, surfaces in
- *     provenance + Yjs origin for tracing.
- *
- * Tier 2 (later, mirroring proof-sdk):
- *   - Per-document scoped tokens (viewer/commenter/editor roles).
- *   - JWT-signed agent identities (so untrusted agents can't impersonate).
- */
-
 import type { AgentIdentity, BridgeErrorBody } from './types';
 
 export interface AuthConfig {
-  /** Required header value. Empty string = open mode (dev only). */
   sharedSecret: string;
-  /** When true, requests must carry both token + agent id headers. */
   enforceIdentity?: boolean;
 }
 
@@ -82,7 +62,6 @@ export function authenticate(
   };
 }
 
-/** Read-only routes: identity nice-to-have but not strictly required. */
 export function authenticateReadonly(
   req: Request,
   config: AuthConfig,

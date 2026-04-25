@@ -1,12 +1,3 @@
-/**
- * Pure-logic tests for the agent bridge.
- *
- * These exercise plate-yjs converters, op application, idempotency, and
- * revision tokens in isolation (no HTTP, no Hocuspocus, no Supabase).
- *
- * The HTTP-level integration test lives in `bridge-http.test.ts`.
- */
-
 import { describe, expect, test } from 'bun:test';
 import * as Y from 'yjs';
 
@@ -42,9 +33,6 @@ function freshDoc(initial?: PlateBlock[]): Y.Doc {
 
 const AGENT: AgentIdentity = { agentId: 'test', runId: 'run-1' };
 
-// ──────────────────────────────────────────────────────────────────
-// plate-yjs converters
-// ──────────────────────────────────────────────────────────────────
 
 describe('plate-yjs', () => {
   test('round-trips a simple paragraph', () => {
@@ -154,7 +142,6 @@ describe('plate-yjs', () => {
   });
 
   test('top-level Y.XmlElement strays are pruned', () => {
-    // Simulate a half-broken doc with a stray XmlElement (Plate would crash).
     const doc = new Y.Doc();
     const fragment = getContentFragment(doc);
     Y.transact(doc, () => {
@@ -164,7 +151,7 @@ describe('plate-yjs', () => {
         plateBlockToYText({ type: 'p', children: [{ text: 'also good' }] }),
       ]);
     });
-    expect(blockCountOf(fragment)).toBe(2); // already skips the stray
+    expect(blockCountOf(fragment)).toBe(2);
     let pruned = 0;
     Y.transact(doc, () => {
       pruned = pruneIllegalChildren(fragment);
@@ -179,9 +166,6 @@ describe('plate-yjs', () => {
   });
 });
 
-// ──────────────────────────────────────────────────────────────────
-// edit ops
-// ──────────────────────────────────────────────────────────────────
 
 describe('agent-ops.applyOps', () => {
   test('rejects empty ops array', () => {
@@ -304,19 +288,15 @@ describe('agent-ops.applyOps', () => {
     expect(() =>
       applyOps(doc, AGENT, [
         { type: 'appendBlocks', blocks: [plateParagraph('two')] },
-        { type: 'deleteBlock', ref: 'bxxx' }, // invalid ref → throws inside transact
+        { type: 'deleteBlock', ref: 'bxxx' },
       ]),
     ).toThrow();
-    // The bad ref is caught by validateOps before any mutation runs, so the
-    // doc is unchanged.
     const blocks = snapshotBlocks(getContentFragment(doc));
     expect(blocks.map((b) => b.text)).toEqual(['one']);
   });
 
   test('mutations carry the bridge origin tag', () => {
     const doc = freshDoc();
-    // Touch the fragment so any Yjs-internal type-init transactions fire
-    // BEFORE we attach the listener. We only care about applyOps's own.
     getContentFragment(doc);
     const seen: unknown[] = [];
     doc.on('afterTransaction', (tx) => seen.push(tx.origin));
@@ -333,9 +313,6 @@ describe('agent-ops.applyOps', () => {
   });
 });
 
-// ──────────────────────────────────────────────────────────────────
-// revision
-// ──────────────────────────────────────────────────────────────────
 
 describe('revision', () => {
   test('changes when document mutates', () => {
@@ -356,9 +333,6 @@ describe('revision', () => {
   });
 });
 
-// ──────────────────────────────────────────────────────────────────
-// idempotency
-// ──────────────────────────────────────────────────────────────────
 
 describe('idempotency cache', () => {
   test('returns cached entries for matching body hash', () => {
@@ -384,7 +358,7 @@ describe('idempotency cache', () => {
   });
 
   test('expired entries are evicted lazily', () => {
-    const cache = new IdempotencyCache<string>(0); // immediately expires
+    const cache = new IdempotencyCache<string>(0);
     cache.put('k', 'h', 200, 'r');
     expect(cache.get('k')).toBeNull();
   });

@@ -1,24 +1,3 @@
-/**
- * Anthill collaborative editing server.
- *
- * Hocuspocus + Yjs. One Yjs document per `documents.id` row.
- * State is persisted as base64 in `documents.yjs_state` via the Supabase
- * service-role key (so RLS doesn't block the server).
- *
- * Auth model (v1, intentionally permissive):
- *   - The browser passes the Supabase user id as `token`.
- *   - We accept any non-empty token. RLS on the table still gates the REST
- *     reads/writes the Next.js app makes; the Yjs WebSocket is auxiliary.
- *
- * Tighten before production by validating a JWT minted server-side.
- *
- * Alongside Hocuspocus, this process also starts the **agent bridge** —
- * an HTTP surface external agents (Claude Code, Copilot, our own backend
- * agents) use to read snapshots and apply block-level edits to live
- * docs. See `src/agent-bridge.ts`. Mutations there flow through the same
- * Y.Doc Hocuspocus owns, so connected browsers see edits immediately.
- */
-
 import { Server } from '@hocuspocus/server';
 import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 import * as Y from 'yjs';
@@ -42,10 +21,6 @@ function getSupabaseAdmin(): SupabaseClient {
   });
 }
 
-/**
- * Walks the Yjs XmlFragment representing the Plate document and concatenates
- * its text. Used to keep `documents.plain_text` fresh for search/embeddings.
- */
 function extractPlainText(doc: Y.Doc): string {
   const fragment = doc.getXmlFragment('content');
   const out: string[] = [];
@@ -155,11 +130,6 @@ const server = new Server({
 
 server.listen();
 
-// ──────────────────────────────────────────────────────────────────
-// Agent bridge — HTTP surface for external agents.
-// Shares the same Hocuspocus instance so mutations broadcast to all
-// connected editors and persist via the same hooks above.
-// ──────────────────────────────────────────────────────────────────
 
 const bridge = new AgentBridge({
   port: BRIDGE_PORT,

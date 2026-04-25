@@ -1,12 +1,3 @@
-/**
- * Diagnostic: dump the raw Yjs structure stored in Supabase for one doc.
- * Run with `bun run scripts/dump-doc.ts <documentId>`.
- *
- * Prints every fragment present on the doc + the JSON tree of each
- * top-level node so we can see exactly what Plate's slate-yjs encoding
- * is laying down (and where our snapshot walker is missing data).
- */
-
 import { createClient } from '@supabase/supabase-js';
 import * as Y from 'yjs';
 

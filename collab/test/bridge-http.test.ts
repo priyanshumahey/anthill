@@ -1,13 +1,3 @@
-/**
- * HTTP integration test for the agent bridge.
- *
- * Spins up a real Hocuspocus + Bun.serve (no Supabase HTTP — we stub the
- * Supabase client at the JS-method level), then drives the bridge over
- * fetch() the way an external agent would. Covers: discovery, snapshot,
- * state, edit, idempotency replay, stale revision, missing-ref errors,
- * and auth.
- */
-
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { Server } from '@hocuspocus/server';
 import * as Y from 'yjs';
@@ -15,9 +5,6 @@ import * as Y from 'yjs';
 import { AgentBridge } from '../src/agent-bridge';
 import type { EditResponse, SnapshotResponse, StateResponse } from '../src/types';
 
-// ──────────────────────────────────────────────────────────────────
-// Stubs
-// ──────────────────────────────────────────────────────────────────
 
 const KNOWN_DOC_ID = '00000000-0000-4000-8000-000000000001';
 const MISSING_DOC_ID = '00000000-0000-4000-8000-0000000000ff';
@@ -25,7 +12,6 @@ const MISSING_DOC_ID = '00000000-0000-4000-8000-0000000000ff';
 let storedTitle: string | null = 'Initial title';
 const titleUpdates: { title: string; at: string }[] = [];
 
-/** Just enough Supabase surface for the bridge. */
 const fakeSupabase = {
   from(table: string) {
     if (table !== 'documents') {
@@ -60,7 +46,6 @@ const fakeSupabase = {
         return r;
       },
       then(resolve: (value: { data: null; error: null }) => unknown) {
-        // Awaiting `.update().eq()` (the title patch path) lands here.
         if (mode === 'update' && filterId === KNOWN_DOC_ID) {
           if (typeof updatePatch.title === 'string') {
             storedTitle = updatePatch.title as string;
@@ -80,12 +65,11 @@ const fakeSupabase = {
 let server: Server | undefined;
 let bridge: AgentBridge | undefined;
 let baseUrl = '';
-const BRIDGE_PORT = 18889; // unused range so it doesn't clash with dev server
+const BRIDGE_PORT = 18889;
 const HP_PORT = 18888;
 const SECRET = 'test-secret';
 
 beforeAll(async () => {
-  // Hocuspocus with no persistence hooks — pure in-memory.
   const hp = new Server({ port: HP_PORT, name: 'test-collab', quiet: true });
   server = hp;
   await hp.listen();
@@ -105,15 +89,10 @@ afterAll(async () => {
   await server?.destroy();
 });
 
-// ──────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────
-
 interface FetchOpts {
   method?: string;
   body?: unknown;
   headers?: Record<string, string>;
-  /** Skip auth headers entirely (for negative tests). */
   noAuth?: boolean;
 }
 
@@ -139,9 +118,6 @@ async function call<T = unknown>(
   return { status: res.status, body };
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Tests
-// ──────────────────────────────────────────────────────────────────
 
 describe('agent bridge HTTP', () => {
   test('GET /healthz works without auth', async () => {
@@ -234,7 +210,6 @@ describe('agent bridge HTTP', () => {
     });
     const beforeCount = first.body.blockCount;
 
-    // Replaying the exact same body+key should NOT mutate again.
     const replay = await call<EditResponse>(`/documents/${KNOWN_DOC_ID}/edit`, {
       method: 'POST',
       headers: { 'idempotency-key': 'idem-key-1' },
@@ -261,7 +236,6 @@ describe('agent bridge HTTP', () => {
 
   test('stale baseRevision is rejected with 409', async () => {
     const snap = await call<SnapshotResponse>(`/documents/${KNOWN_DOC_ID}/snapshot`);
-    // Mutate once to invalidate the just-fetched revision.
     await call(`/documents/${KNOWN_DOC_ID}/edit`, {
       method: 'POST',
       headers: { 'idempotency-key': 'mutate-then-stale' },
@@ -318,9 +292,6 @@ describe('agent bridge HTTP', () => {
   });
 
   test('mutations broadcast via Y.Doc to a connected client', async () => {
-    // Fresh Hocuspocus state still uses the same Y.Doc instance for our
-    // documentId; openDirectConnection fetches it. We simulate a "browser"
-    // by opening a second direct connection and watching for updates.
     if (!server) throw new Error('server not started');
     const hp = (server as { hocuspocus: import('@hocuspocus/server').Hocuspocus }).hocuspocus;
 
@@ -338,7 +309,6 @@ describe('agent bridge HTTP', () => {
       body: { ops: [{ type: 'appendBlocks', blocks: [{ type: 'p', children: [{ text: 'broadcasted' }] }] }] },
     });
 
-    // Hocuspocus broadcasts asynchronously; give it a tick.
     await new Promise((r) => setTimeout(r, 50));
     watcherDoc.off('update', onUpdate);
     await watcher.disconnect();

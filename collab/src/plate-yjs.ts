@@ -1,29 +1,3 @@
-/**
- * Plate <-> Yjs converters that mirror @slate-yjs/core's wire format.
- *
- * IMPORTANT: every Plate / Slate **Element** is encoded as a `Y.XmlText`,
- * NOT a `Y.XmlElement`. Element fields (`type`, `id`, alignment, …) live
- * in the XmlText's *attributes*; children are written into the XmlText's
- * delta (string inserts for text leaves, nested Y.XmlText inserts for
- * element children). Calling `setBlockText` on a Y.XmlElement, or
- * inserting a Y.XmlElement at the top level, makes Plate's editor throw
- * `yText.toDelta is not a function` because the binding expects only
- * `Y.XmlText` siblings.
- *
- * Reference (bundled inside web/node_modules/@slate-yjs/core/dist/index.js):
- *
- *   slateNodesToInsertDelta(nodes) ->
- *     nodes.map(n => Text.isText(n)
- *       ? { insert: n.text, attributes: marks(n) }
- *       : { insert: slateElementToYText(n) })
- *
- *   slateElementToYText({ children, ...attrs }) ->
- *     const t = new Y.XmlText();
- *     for (const [k,v] of Object.entries(attrs)) t.setAttribute(k, v);
- *     t.applyDelta(slateNodesToInsertDelta(children), { sanitize: false });
- *     return t;
- */
-
 import * as Y from 'yjs';
 
 import type {
@@ -41,26 +15,15 @@ export function getContentFragment(doc: Y.Doc): Y.XmlFragment {
   return doc.getXmlFragment(FRAGMENT_NAME);
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Plate value → Yjs (write side)
-// ──────────────────────────────────────────────────────────────────
-
-/**
- * Build a `Y.XmlText` for a single Plate block. The returned XmlText is
- * detached and ready to be inserted into a parent (fragment / parent
- * delta) inside a `Y.transact`.
- */
 export function plateBlockToYText(block: PlateBlock): Y.XmlText {
   const yt = new Y.XmlText();
 
-  // Element-level attrs (type + everything except children).
   for (const [k, v] of Object.entries(block)) {
     if (k === 'children') continue;
     if (v === undefined) continue;
     yt.setAttribute(k, v);
   }
 
-  // Children → delta. `sanitize: false` matches slate-yjs.
   const children = Array.isArray(block.children) ? block.children : [];
   const delta = childrenToInsertDelta(children);
   if (delta.length > 0) {
@@ -104,9 +67,6 @@ function isPlateBlock(value: unknown): value is PlateBlock {
   );
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Yjs → Plate value (read side)
-// ──────────────────────────────────────────────────────────────────
 
 interface DeltaReadOp {
   insert?: string | Y.XmlText;
@@ -142,24 +102,10 @@ export function fragmentToPlateValue(fragment: Y.XmlFragment): PlateValue {
     if (child instanceof Y.XmlText) {
       out.push(yTextToPlateBlock(child));
     }
-    // Y.XmlElement at the top level is illegal for Plate; we skip them so
-    // a half-broken doc still renders something sensible.
   }
   return out;
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Snapshot helpers
-// ──────────────────────────────────────────────────────────────────
-
-/**
- * Returns the `Y.XmlText` block at ordinal index `i` (0-based) in the
- * fragment, or `null`. Stable refs `b<i+1>` map via this function. Only
- * counts `Y.XmlText` siblings — strays of any other kind are skipped.
- *
- * `index` in the return value is the *positional* index in the fragment
- * (suitable for fragment.delete / insert), NOT the XmlText ordinal.
- */
 export function getBlockByRef(
   fragment: Y.XmlFragment,
   ref: string,
@@ -183,11 +129,6 @@ export function getBlockByRef(
   return null;
 }
 
-/**
- * Like getBlockByRef but for the *positional* slot AFTER the Nth XmlText
- * sibling, used by insertBlocksAfter. Returns the positional index
- * suitable for fragment.insert.
- */
 export function positionAfterRef(
   fragment: Y.XmlFragment,
   ref: string,
@@ -255,9 +196,6 @@ function previewText(block: PlateBlock): string {
   return parts.join('').replace(/\s+/g, ' ').trim().slice(0, 240);
 }
 
-// ──────────────────────────────────────────────────────────────────
-// Convenience
-// ──────────────────────────────────────────────────────────────────
 
 export function plateParagraph(
   text: string,
@@ -266,25 +204,13 @@ export function plateParagraph(
   return { type: 'p', children: [{ text }], ...attrs };
 }
 
-/**
- * Replace the entire text content of an existing block (Y.XmlText). Wipes
- * children and drops formatting. Caller must already be inside
- * `Y.transact`.
- */
 export function setYTextPlainText(yt: Y.XmlText, text: string): void {
   if (yt.length > 0) yt.delete(0, yt.length);
   if (text) yt.insert(0, text);
 }
 
-/**
- * Strip every top-level `Y.XmlElement` sibling from the fragment. Plate
- * cannot render them and the editor crashes with `yText.toDelta is not a
- * function`. Used by the cleanup script and as a defensive sweep before
- * any read-back. Caller must wrap in `Y.transact`.
- */
 export function pruneIllegalChildren(fragment: Y.XmlFragment): number {
   let removed = 0;
-  // Walk from the end so positional indexes remain valid.
   const arr = fragment.toArray();
   for (let i = arr.length - 1; i >= 0; i--) {
     if (!(arr[i] instanceof Y.XmlText)) {

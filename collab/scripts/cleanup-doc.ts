@@ -1,19 +1,3 @@
-/**
- * One-time repair script. Loads a document's Yjs state from Supabase,
- * strips every top-level Y.XmlElement (illegal under slate-yjs's
- * encoding — Plate crashes with `yText.toDelta is not a function`), and
- * writes the cleaned state back.
- *
- * Usage:
- *   bun --env-file=.env run scripts/cleanup-doc.ts <documentId> [--dry]
- *
- * Pass `--dry` to print the diff without writing.
- *
- * Safe to run while the collab server is up — the script writes through
- * the bridge's openDirectConnection so the change broadcasts to every
- * connected client (and the existing onStoreDocument hook persists it).
- */
-
 import { createClient } from '@supabase/supabase-js';
 import * as Y from 'yjs';
 

@@ -1,16 +1,3 @@
-/**
- * Apply agent edit ops as Yjs transactions on a live Y.Doc.
- *
- * All mutations happen inside a single `Y.transact(doc, fn, origin)` so:
- *   - Hocuspocus broadcasts one batched update to every connected client.
- *   - Undo/redo on the editor side can target the agent origin if desired.
- *   - `onStoreDocument` fires once at the end (Hocuspocus debounces).
- *
- * Provenance (proofAuthor / proofRunId) is stamped on every block the
- * agent inserts. Existing blocks the agent only touches via setBlockText
- * keep their original provenance.
- */
-
 import * as Y from 'yjs';
 
 import type {
@@ -30,7 +17,6 @@ import {
 
 export interface ApplyOpsResult {
   applied: number;
-  /** Refs of newly-inserted blocks, in the order they were created. */
   newRefs: string[];
 }
 
@@ -48,13 +34,6 @@ export class BridgeOpError extends Error {
   }
 }
 
-/**
- * Apply every op in a single transaction. All-or-nothing: if any op fails
- * we throw and the transaction is rolled back implicitly (we throw before
- * mutating anything, so partial state never lands).
- *
- * Returns the new refs created and the new block count.
- */
 export function applyOps(
   doc: Y.Doc,
   identity: AgentIdentity,
@@ -78,10 +57,6 @@ export function applyOps(
   let pendingTitle: string | null = null;
   const newRefs: string[] = [];
 
-  // All-or-nothing semantics: track every change made under our origin so we
-  // can undo the partial state if an op throws midway. (Yjs commits whatever
-  // mutations land before a throw inside Y.transact, so we need an explicit
-  // rollback.) UndoManager only tracks origins it's told about.
   const undoManager = new Y.UndoManager(fragment, {
     trackedOrigins: new Set<unknown>([origin]),
     captureTimeout: 0,
@@ -114,9 +89,6 @@ export function applyOps(
                 { ref: op.afterRef },
               );
             }
-            // Compute the XmlText ordinal of the anchor so we can name the
-            // new refs correctly. (The anchor is the Nth XmlText sibling,
-            // so the first new block becomes b{N+1}.)
             const anchorOrdinal = ordinalOfRef(op.afterRef);
             const els = op.blocks.map((b) =>
               plateBlockToYText(stampProvenance(b, identity)),
@@ -187,8 +159,6 @@ export function applyOps(
                 { ref: op.ref },
               );
             }
-            // Replace the XmlText delta in-place. Provenance is recorded
-            // via `proofTypedBy` so original authorship is preserved.
             setYTextPlainText(found.element, op.text);
             found.element.setAttribute(
               'proofTypedBy',
@@ -200,12 +170,10 @@ export function applyOps(
             break;
           }
           case 'setTitle': {
-            // Title is stored in Postgres, not Yjs, so we defer to the caller.
             pendingTitle = op.title;
             break;
           }
           default:
-            // TS exhaustiveness — unreachable given validateOps above.
             throw new BridgeOpError(
               'BAD_REQUEST',
               `unknown op type: ${(op as { type: string }).type}`,
@@ -213,8 +181,6 @@ export function applyOps(
         }
       }
       } catch (err) {
-        // Capture and rethrow AFTER the transaction commits so the
-        // UndoManager has recorded everything; we then undo it below.
         opError = err;
       }
     },
@@ -223,8 +189,6 @@ export function applyOps(
 
   if (opError) {
     try {
-      // Undo every change tracked under our origin. Runs in its own
-      // (untracked) transaction.
       while (undoManager.canUndo()) undoManager.undo();
     } finally {
       undoManager.destroy();
@@ -249,8 +213,6 @@ function stampProvenance(
     proofAuthor: `ai:${identity.agentId}`,
   };
   if (identity.runId) stamped.proofRunId = identity.runId;
-  // Recurse into nested blocks (e.g., blockquote > p) so the whole subtree
-  // is attributable. Text leaves are left alone.
   if (Array.isArray(block.children)) {
     stamped.children = block.children.map((c) =>
       isPlateBlockLike(c) ? stampProvenance(c as PlateBlock, identity) : c,
@@ -331,7 +293,6 @@ function validateOps(ops: EditOp[]): void {
         break;
       case 'insertBlocksAfter':
       case 'insertBlocksBefore':
-        // ref check handled in switch above (ref is `afterRef`/`beforeRef`).
         break;
       case 'setTitle':
         if (typeof op.title !== 'string' || !op.title.trim()) {

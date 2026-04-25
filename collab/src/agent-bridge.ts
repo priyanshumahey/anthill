@@ -1,21 +1,3 @@
-/**
- * Anthill agent bridge — HTTP surface mounted next to the Hocuspocus
- * WebSocket server. External agents (Claude Code, Copilot, our own
- * backend agents) call this surface to read snapshots and apply
- * block-level edits to a live document.
- *
- * Design notes
- * ────────────
- * - The bridge accesses each document via Hocuspocus'
- *   `openDirectConnection(slug)`. That gives us a `Y.Doc` whose updates
- *   broadcast to every connected browser AND fire `onStoreDocument`
- *   (so Supabase persistence is unchanged).
- * - All mutations run in one `Y.transact` with a tagged origin so the
- *   editor can later attribute them in undo/redo & UI overlays.
- * - Errors map to a small typed `BridgeErrorBody` so the client SDKs
- *   can dispatch off `error` codes.
- */
-
 import type { Hocuspocus } from '@hocuspocus/server';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import * as Y from 'yjs';
@@ -54,7 +36,6 @@ export interface AgentBridgeConfig {
   hocuspocus: Hocuspocus;
   supabase: SupabaseClient;
   auth: AuthConfig;
-  /** Path prefix; defaults to ''. */
   basePath?: string;
 }
 
@@ -65,15 +46,6 @@ interface DocMeta {
 
 export class AgentBridge {
   private readonly idempotency = new IdempotencyCache<EditResponse>();
-  /**
-   * Per-document long-lived "warm" direct connections. Hocuspocus unloads a
-   * document the moment its connection count hits zero, so naive
-   * open→mutate→disconnect on every request would discard the in-memory
-   * Y.Doc between calls (we'd reload from Supabase each time, losing any
-   * un-persisted state and racing with the debounced storeDocument hook).
-   * Pinning one connection per document keeps the canonical doc resident
-   * for the bridge's lifetime; we reuse it across requests.
-   */
   private readonly warmConns = new Map<
     string,
     Promise<import('@hocuspocus/server').DirectConnection>
@@ -95,22 +67,17 @@ export class AgentBridge {
     return server;
   }
 
-  /** Drop and destroy every warm connection. Call before process exit. */
   async stop(): Promise<void> {
     for (const [, p] of this.warmConns) {
       try {
         const conn = await p;
         await conn.disconnect();
       } catch {
-        /* ignore */
       }
     }
     this.warmConns.clear();
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // Routing
-  // ──────────────────────────────────────────────────────────────────
 
   private async handle(req: Request): Promise<Response> {
     const url = new URL(req.url);
@@ -118,10 +85,8 @@ export class AgentBridge {
     const method = req.method.toUpperCase();
 
     try {
-      // CORS preflight
       if (method === 'OPTIONS') return cors(new Response(null, { status: 204 }));
 
-      // Public routes
       if (method === 'GET' && path === '/healthz') {
         return cors(json({ status: 'ok', version: BRIDGE_VERSION }));
       }
@@ -129,7 +94,6 @@ export class AgentBridge {
         return cors(json(this.discoveryDoc()));
       }
 
-      // Document-scoped routes: /documents/:id/{snapshot|state|edit|presence|repair}
       const docMatch = path.match(/^\/documents\/([^/]+)\/(snapshot|state|edit|presence|repair)\/?$/);
       if (docMatch) {
         const documentId = decodeURIComponent(docMatch[1]);
@@ -151,9 +115,6 @@ export class AgentBridge {
     }
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // Routes
-  // ──────────────────────────────────────────────────────────────────
 
   private discoveryDoc(): DiscoveryDoc {
     return {
@@ -218,7 +179,6 @@ export class AgentBridge {
       return errorResponse(400, 'BAD_REQUEST', 'invalid JSON body');
     }
 
-    // Replay from idempotency cache if same key + same body.
     if (idemKey) {
       const bodyHash = IdempotencyCache.hashBody(body);
       const cached = this.idempotency.get(idemKey);
@@ -245,7 +205,6 @@ export class AgentBridge {
     let opError: BridgeOpError | null = null;
 
     const docResp = await this.withDoc(documentId, async (doc, _meta) => {
-      // Optimistic locking: if caller pinned a revision and it's stale, 409.
       if (body.baseRevision && body.baseRevision !== computeRevision(doc)) {
         staleRevision = true;
         return errorResponse(
@@ -280,7 +239,6 @@ export class AgentBridge {
         blockCount: blockCountOf(fragment),
         newRefs: result.newRefs,
       };
-      // Cache the success response under the idempotency key.
       if (idemKey) {
         this.idempotency.put(
           idemKey,
@@ -303,7 +261,6 @@ export class AgentBridge {
       );
     }
 
-    // Persist title outside the Yjs transaction (Supabase row, not CRDT).
     if (titleToPersist !== null) {
       try {
         const { error } = await this.cfg.supabase
@@ -329,12 +286,8 @@ export class AgentBridge {
     try {
       body = (await req.json()) as { status?: string; message?: string };
     } catch {
-      // Allow empty body.
     }
 
-    // We piggy-back on Yjs awareness: write a per-agent entry into the doc's
-    // awareness state. The browser editor's PresenceStack already renders
-    // anyone with an `agent` flag.
     return this.withDoc(documentId, async (doc, _meta) => {
       const awarenessShared = doc.getMap<unknown>('agent_presence');
       awarenessShared.set(auth.identity.agentId, {
@@ -349,13 +302,6 @@ export class AgentBridge {
     });
   }
 
-  /**
-   * Repair endpoint: strips top-level `Y.XmlElement` siblings (illegal
-   * under slate-yjs's encoding) from the document. Generates Yjs delete
-   * ops so connected clients converge live, no reload needed. Also a
-   * useful escape hatch when an external tool puts the CRDT in a
-   * surprising state.
-   */
   private async repair(req: Request, documentId: string): Promise<Response> {
     const auth = authenticate(req, this.cfg.auth);
     if (!auth.ok) return errorResponse(auth.status, auth.body.error, auth.body.message);
@@ -380,10 +326,6 @@ export class AgentBridge {
     });
   }
 
-  // ──────────────────────────────────────────────────────────────────
-  // Doc access via Hocuspocus directConnection
-  // ──────────────────────────────────────────────────────────────────
-
   private async withDoc(
     documentId: string,
     fn: (doc: import('yjs').Doc, meta: DocMeta) => Promise<Response>,
@@ -392,8 +334,6 @@ export class AgentBridge {
       return errorResponse(400, 'BAD_REQUEST', 'invalid document id');
     }
 
-    // Check the doc actually exists in Supabase. This avoids creating
-    // empty Yjs ghosts via openDirectConnection for typoed slugs.
     const { data: row, error: readErr } = await this.cfg.supabase
       .from('documents')
       .select('id, title')
@@ -409,7 +349,6 @@ export class AgentBridge {
     const conn = await this.getWarmConnection(documentId);
 
     try {
-      // Hocuspocus opens the doc internally; we get it via `conn.document`.
       const internalDoc = (conn as unknown as { document?: { hasConnections?: () => boolean } & import('yjs').Doc })
         .document;
       if (!internalDoc) {
@@ -423,18 +362,12 @@ export class AgentBridge {
             : false,
       };
 
-      // Run the caller. Mutations they perform inside Y.transact will be
-      // batched and broadcast to every connected client when the
-      // transaction commits, then `onStoreDocument` debounces a write
-      // back to Supabase.
       let response: Response | null = null;
       await conn.transact(async (transactDoc: import('yjs').Doc) => {
         response = await fn(transactDoc, meta);
       });
       return response ?? errorResponse(500, 'INTERNAL_ERROR', 'no response produced');
     } catch (err) {
-      // If the warm connection died (e.g. document was unloaded by another
-      // path), drop the cached promise so the next call re-opens.
       this.warmConns.delete(documentId);
       throw err;
     }
@@ -449,15 +382,10 @@ export class AgentBridge {
       isAgentBridge: true,
     });
     this.warmConns.set(documentId, existing);
-    // If opening fails, evict so the next request retries cleanly.
     existing.catch(() => this.warmConns.delete(documentId));
     return existing;
   }
 }
-
-// ──────────────────────────────────────────────────────────────────
-// Helpers
-// ──────────────────────────────────────────────────────────────────
 
 function json(body: unknown, init: ResponseInit = {}): Response {
   return new Response(JSON.stringify(body), {
