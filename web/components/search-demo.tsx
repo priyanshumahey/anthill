@@ -24,7 +24,7 @@ export function SearchDemo() {
         className="flex gap-2"
         onSubmit={(e) => {
           e.preventDefault();
-          if (query.trim()) search.mutate({ query, limit: 5 });
+          if (query.trim()) search.mutate({ query, k: 5 });
         }}
       >
         <input
@@ -39,12 +39,30 @@ export function SearchDemo() {
       </form>
       {search.data && (
         <ul className="flex flex-col gap-2 text-sm">
-          {search.data.results.map((r) => (
-            <li key={r.id} className="rounded border p-2">
-              <div className="font-medium">{r.title}</div>
-              {r.abstract && (
-                <div className="text-xs text-muted-foreground">{r.abstract}</div>
-              )}
+          {search.data.hits.length === 0 && (
+            <li className="text-xs text-muted-foreground">No results.</li>
+          )}
+          {search.data.hits.map((h) => (
+            <li
+              key={`${h.arxiv_id}-${h.chunk_index}`}
+              className="rounded border p-2"
+            >
+              <div className="flex items-baseline justify-between gap-2">
+                <a
+                  href={`https://arxiv.org/abs/${h.arxiv_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-medium underline-offset-2 hover:underline"
+                >
+                  {h.title ?? h.arxiv_id}
+                </a>
+                <span className="text-xs text-muted-foreground">
+                  {(h.score * 100).toFixed(1)}%
+                </span>
+              </div>
+              <div className="mt-1 line-clamp-3 text-xs text-muted-foreground">
+                {h.text}
+              </div>
             </li>
           ))}
         </ul>
