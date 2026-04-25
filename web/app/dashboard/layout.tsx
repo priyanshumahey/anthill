@@ -2,11 +2,7 @@ import type * as React from "react"
 import { redirect } from "next/navigation"
 
 import { AppSidebar } from "@/components/app-sidebar"
-import {
-  SidebarInset,
-  SidebarProvider,
-  SidebarTrigger,
-} from "@/components/ui/sidebar"
+import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar"
 import { createClient } from "@/lib/supabase/server"
 
 export default async function DashboardLayout({
@@ -37,12 +33,8 @@ export default async function DashboardLayout({
   return (
     <SidebarProvider>
       <AppSidebar user={user} />
-      <SidebarInset>
-        <header className="flex h-12 items-center gap-2 border-b px-3">
-          <SidebarTrigger />
-          <span className="text-sm font-medium">Dashboard</span>
-        </header>
-        <main className="flex-1 p-4">{children}</main>
+      <SidebarInset className="flex h-svh min-w-0 flex-col">
+        {children}
       </SidebarInset>
     </SidebarProvider>
   )
