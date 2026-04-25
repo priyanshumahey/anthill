@@ -26,6 +26,7 @@ const STATIC_LABELS: Record<string, string> = {
   documents: "Documents",
   workspaces: "Workspaces",
   search: "Search",
+  agents: "Agents",
 };
 
 const UUID_RE =
@@ -41,6 +42,15 @@ function useBreadcrumbs(): Crumb[] {
     segments[1] === "documents" &&
     segments[2] &&
     UUID_RE.test(segments[2])
+      ? segments[2]
+      : null;
+
+  // Detect /dashboard/agents/[id] (run id is a 32-char hex, not a UUID).
+  const agentRunId =
+    segments[0] === "dashboard" &&
+    segments[1] === "agents" &&
+    segments[2] &&
+    /^[0-9a-f]{8,}$/i.test(segments[2])
       ? segments[2]
       : null;
 
@@ -64,6 +74,10 @@ function useBreadcrumbs(): Crumb[] {
       crumbs.push({
         label: docQuery.data?.title ?? "Document",
       });
+      continue;
+    }
+    if (i === 2 && agentRunId) {
+      crumbs.push({ label: `Run ${agentRunId.slice(0, 8)}` });
       continue;
     }
     crumbs.push({

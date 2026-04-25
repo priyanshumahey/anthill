@@ -38,3 +38,33 @@ export function getCollabWsUrl(): string {
   }
   return url;
 }
+
+/**
+ * HTTP base URL for the agent bridge (HTTP API on the same /collab
+ * process, default port 8889). The browser shows this in the "Connect
+ * agent" dialog so external agents know where to point. Defaults derive
+ * from `NEXT_PUBLIC_HOCUSPOCUS_URL` so localhost-with-tunnels works
+ * without extra env wiring.
+ */
+export function getAgentBridgeUrl(): string {
+  const explicit = process.env.NEXT_PUBLIC_AGENT_BRIDGE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+
+  // Derive from the WS url: ws://host:8888 → http://host:8889.
+  const ws = process.env.NEXT_PUBLIC_HOCUSPOCUS_URL?.trim();
+  if (ws) {
+    try {
+      const parsed = new URL(ws);
+      const httpProto = parsed.protocol === 'wss:' ? 'https:' : 'http:';
+      // Map :8888 → :8889 by default, but keep host as-is (so dev
+      // tunnels and custom ports still work — operators can override
+      // with NEXT_PUBLIC_AGENT_BRIDGE_URL).
+      const port = parsed.port === '8888' ? '8889' : parsed.port;
+      const portSuffix = port ? `:${port}` : '';
+      return `${httpProto}//${parsed.hostname}${portSuffix}`;
+    } catch {
+      // fall through to default
+    }
+  }
+  return 'http://localhost:8889';
+}

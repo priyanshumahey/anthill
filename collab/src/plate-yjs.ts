@@ -67,6 +67,73 @@ function isPlateBlock(value: unknown): value is PlateBlock {
   );
 }
 
+/**
+ * An inline element child of a paragraph (most importantly, citation badges
+ * inserted by the editor's citation-suggest plugin). These are full
+ * `PlateBlock` shapes nested inside a parent block's `children`, distinct
+ * from text leaves, and the bridge must preserve them across destructive
+ * agent edits like `setBlockText` and `replaceBlock` — otherwise an agent
+ * that just wants to rewrite the prose ends up silently nuking the
+ * provenance metadata that powers the editor's reference list.
+ */
+export function extractInlineElements(block: PlateBlock): PlateBlock[] {
+  if (!Array.isArray(block.children)) return [];
+  return block.children.filter(isPlateBlock);
+}
+
+/**
+ * Replace a block's text with a new run, while keeping any inline element
+ * children (citations, etc.) appended after the new text. Pass
+ * `dropInlines: true` to recover the legacy "wipe everything" behaviour.
+ *
+ * Returns the inline elements that were preserved so the caller can
+ * surface a count back to the agent.
+ */
+export function setBlockTextPreservingInlines(
+  yt: Y.XmlText,
+  text: string,
+  opts: { dropInlines?: boolean } = {},
+): PlateBlock[] {
+  const preserved = opts.dropInlines
+    ? []
+    : extractInlineElements(yTextToPlateBlock(yt));
+
+  if (yt.length > 0) yt.delete(0, yt.length);
+  if (text) yt.insert(0, text);
+
+  if (preserved.length > 0) {
+    // Without an explicit `retain`, applyDelta inserts at position 0 and
+    // would put the citations BEFORE the freshly inserted text. Retain
+    // past the current length so they land at the end of the block.
+    const ops: InsertDeltaOp[] = preserved.map((el) => ({
+      insert: plateBlockToYText(el),
+    }));
+    const delta: Array<InsertDeltaOp | { retain: number }> =
+      yt.length > 0 ? [{ retain: yt.length }, ...ops] : ops;
+    yt.applyDelta(delta as InsertDeltaOp[], { sanitize: false });
+  }
+
+  return preserved;
+}
+
+/**
+ * Append a list of inline elements (cloned via the Plate roundtrip) to the
+ * end of `yt`'s content. Used when an agent's `replaceBlock` would
+ * otherwise drop citations from the original block.
+ */
+export function appendInlineElements(
+  yt: Y.XmlText,
+  inlines: PlateBlock[],
+): void {
+  if (inlines.length === 0) return;
+  const ops: InsertDeltaOp[] = inlines.map((el) => ({
+    insert: plateBlockToYText(el),
+  }));
+  const delta: Array<InsertDeltaOp | { retain: number }> =
+    yt.length > 0 ? [{ retain: yt.length }, ...ops] : ops;
+  yt.applyDelta(delta as InsertDeltaOp[], { sanitize: false });
+}
+
 
 interface DeltaReadOp {
   insert?: string | Y.XmlText;
@@ -144,6 +211,7 @@ export function snapshotBlocks(fragment: Y.XmlFragment): SnapshotBlock[] {
   for (const child of fragment.toArray()) {
     if (!(child instanceof Y.XmlText)) continue;
     const block = yTextToPlateBlock(child);
+    const inlines = inlineSummariesOf(block);
     const text = previewText(block);
     const attrs: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(block)) {
@@ -167,10 +235,58 @@ export function snapshotBlocks(fragment: Y.XmlFragment): SnapshotBlock[] {
       text,
       attrs,
       proof,
+      inlines: inlines.length > 0 ? inlines : undefined,
     });
     i++;
   }
   return out;
+}
+
+/**
+ * Per-inline-element summary surfaced in snapshots so an agent can see what
+ * non-text children live inside a block (citations, mentions, etc.) and
+ * decide whether/how to preserve them on a destructive edit.
+ */
+function inlineSummariesOf(
+  block: PlateBlock,
+): Array<{ type: string; label?: string; attrs: Record<string, unknown> }> {
+  const out: Array<{
+    type: string;
+    label?: string;
+    attrs: Record<string, unknown>;
+  }> = [];
+  for (const child of block.children) {
+    if (!isPlateBlockChild(child)) continue;
+    const c = child as PlateBlock;
+    const type = typeof c.type === 'string' ? c.type : 'inline';
+    const attrs: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(c)) {
+      if (k === 'type' || k === 'children') continue;
+      attrs[k] = v;
+    }
+    out.push({ type, label: inlineLabelFor(type, attrs), attrs });
+  }
+  return out;
+}
+
+function isPlateBlockChild(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'children' in (value as Record<string, unknown>) &&
+    Array.isArray((value as { children?: unknown }).children)
+  );
+}
+
+function inlineLabelFor(
+  type: string,
+  attrs: Record<string, unknown>,
+): string | undefined {
+  if (type === 'citation') {
+    const arxivId = typeof attrs.arxivId === 'string' ? attrs.arxivId : null;
+    if (arxivId) return `[cite:arXiv:${arxivId}]`;
+  }
+  return undefined;
 }
 
 export function blockCountOf(fragment: Y.XmlFragment): number {
@@ -187,7 +303,20 @@ function previewText(block: PlateBlock): string {
     for (const c of children) {
       if ('text' in c && typeof c.text === 'string') {
         parts.push(c.text);
-      } else if (Array.isArray((c as PlateBlock).children)) {
+        continue;
+      }
+      const inlineType = (c as PlateBlock).type;
+      if (typeof inlineType === 'string') {
+        const label = inlineLabelFor(
+          inlineType,
+          c as unknown as Record<string, unknown>,
+        );
+        if (label) {
+          parts.push(label);
+          continue;
+        }
+      }
+      if (Array.isArray((c as PlateBlock).children)) {
         walk((c as PlateBlock).children);
       }
     }

@@ -238,6 +238,9 @@ export class AgentBridge {
         baseRevision: computeRevision(doc),
         blockCount: blockCountOf(fragment),
         newRefs: result.newRefs,
+        ...(result.preservedInlines > 0
+          ? { preservedInlines: result.preservedInlines }
+          : {}),
       };
       if (idemKey) {
         this.idempotency.put(
@@ -253,12 +256,13 @@ export class AgentBridge {
     if (staleRevision) return docResp;
     if (opError) {
       const e = opError as BridgeOpError;
-      return errorResponse(
-        e.code === 'BLOCK_REF_NOT_FOUND' ? 404 : 400,
-        e.code,
-        e.message,
-        e.details,
-      );
+      const status =
+        e.code === 'BLOCK_REF_NOT_FOUND'
+          ? 404
+          : e.code === 'INLINE_ELEMENTS_WOULD_BE_LOST'
+            ? 409
+            : 400;
+      return errorResponse(status, e.code, e.message, e.details);
     }
 
     if (titleToPersist !== null) {

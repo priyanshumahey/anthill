@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { CollabEditor } from "@/components/editor/collab-editor";
+import { ConnectAgentButton } from "@/components/connect-agent-button";
 import { Input } from "@/components/ui/input";
 import { trpc } from "@/lib/trpc";
 
@@ -74,6 +75,7 @@ export function DocumentEditor({
         <span className="text-xs text-muted-foreground">
           {save.isPending ? "Saving title…" : ""}
         </span>
+        <ConnectAgentButton documentId={id} />
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">

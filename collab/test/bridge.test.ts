@@ -314,6 +314,154 @@ describe('agent-ops.applyOps', () => {
 });
 
 
+// ── Inline-element preservation (citation badges) ─────────────────────────
+//
+// Citations live as inline void Plate elements inside a paragraph's
+// `children`. The bridge must keep them across destructive agent edits
+// (setBlockText / replaceBlock) and refuse `deleteBlock` unless the agent
+// explicitly opts in. The agent only sees flattened `text` previews, so
+// without these guards a "rewrite this paragraph" agent silently strips
+// every citation it touches.
+
+function citation(arxivId: string, attrs: Record<string, unknown> = {}): PlateBlock {
+  return {
+    type: 'citation',
+    arxivId,
+    chunkIndex: 0,
+    title: `Title for ${arxivId}`,
+    score: 0.7,
+    children: [{ text: '' }],
+    ...attrs,
+  };
+}
+
+function paragraphWithCitation(
+  pre: string,
+  ids: string[],
+  post = '',
+): PlateBlock {
+  const children: (PlateBlock | { text: string })[] = [{ text: pre }];
+  for (const id of ids) children.push(citation(id));
+  if (post) children.push({ text: post });
+  return { type: 'p', children: children as PlateBlock['children'] };
+}
+
+describe('agent-ops inline preservation', () => {
+  test('setBlockText keeps citations on the block', () => {
+    const doc = freshDoc([paragraphWithCitation('see ', ['2510.00908'])]);
+    const result = applyOps(doc, AGENT, [
+      { type: 'setBlockText', ref: 'b1', text: 'completely rewritten' },
+    ]);
+    expect(result.preservedInlines).toBe(1);
+    const block = fragmentToPlateValue(getContentFragment(doc))[0];
+    expect(block.children[0]).toEqual({ text: 'completely rewritten' });
+    const citationChild = block.children[1] as PlateBlock;
+    expect(citationChild.type).toBe('citation');
+    expect(citationChild.arxivId).toBe('2510.00908');
+  });
+
+  test('setBlockText with dropInlineElements wipes citations', () => {
+    const doc = freshDoc([paragraphWithCitation('see ', ['2510.00908'])]);
+    const result = applyOps(doc, AGENT, [
+      {
+        type: 'setBlockText',
+        ref: 'b1',
+        text: 'rewritten',
+        dropInlineElements: true,
+      },
+    ]);
+    expect(result.preservedInlines).toBe(0);
+    const block = fragmentToPlateValue(getContentFragment(doc))[0];
+    expect(block.children).toEqual([{ text: 'rewritten' }]);
+  });
+
+  test('replaceBlock lifts citations onto the last replacement block', () => {
+    const doc = freshDoc([
+      paragraphWithCitation('intro ', ['1', '2']),
+    ]);
+    const result = applyOps(doc, AGENT, [
+      {
+        type: 'replaceBlock',
+        ref: 'b1',
+        blocks: [
+          plateParagraph('first new'),
+          plateParagraph('second new'),
+        ],
+      },
+    ]);
+    expect(result.preservedInlines).toBe(2);
+    const blocks = fragmentToPlateValue(getContentFragment(doc));
+    expect(blocks).toHaveLength(2);
+    expect((blocks[0].children[0] as { text: string }).text).toBe('first new');
+    // Citations land on the LAST replacement block.
+    const tail = blocks[1].children;
+    const tailCitations = tail.filter(
+      (c): c is PlateBlock => (c as PlateBlock).type === 'citation',
+    );
+    expect(tailCitations.map((c) => c.arxivId)).toEqual(['1', '2']);
+  });
+
+  test('replaceBlock with dropInlineElements drops them', () => {
+    const doc = freshDoc([paragraphWithCitation('intro ', ['1'])]);
+    const result = applyOps(doc, AGENT, [
+      {
+        type: 'replaceBlock',
+        ref: 'b1',
+        blocks: [plateParagraph('replaced')],
+        dropInlineElements: true,
+      },
+    ]);
+    expect(result.preservedInlines).toBe(0);
+    const block = fragmentToPlateValue(getContentFragment(doc))[0];
+    expect(block.children).toEqual([{ text: 'replaced' }]);
+  });
+
+  test('deleteBlock refuses to drop a block carrying citations', () => {
+    const doc = freshDoc([paragraphWithCitation('see ', ['2510.00908'])]);
+    let caught: BridgeOpError | null = null;
+    try {
+      applyOps(doc, AGENT, [{ type: 'deleteBlock', ref: 'b1' }]);
+    } catch (err) {
+      caught = err as BridgeOpError;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.code).toBe('INLINE_ELEMENTS_WOULD_BE_LOST');
+    expect(caught!.details?.inlineTypes).toEqual(['citation']);
+    // Block must still be there (rollback).
+    expect(snapshotBlocks(getContentFragment(doc))).toHaveLength(1);
+  });
+
+  test('deleteBlock with dropInlineElements removes the block', () => {
+    const doc = freshDoc([
+      paragraphWithCitation('see ', ['2510.00908']),
+      { type: 'p', children: [{ text: 'after' }] },
+    ]);
+    const result = applyOps(doc, AGENT, [
+      { type: 'deleteBlock', ref: 'b1', dropInlineElements: true },
+    ]);
+    expect(result.applied).toBe(1);
+    const blocks = snapshotBlocks(getContentFragment(doc));
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0].text).toBe('after');
+  });
+
+  test('snapshot exposes citations and embeds [cite:...] in the text preview', () => {
+    const doc = freshDoc([
+      paragraphWithCitation('see ', ['2510.00908'], ' and elsewhere'),
+    ]);
+    const blocks = snapshotBlocks(getContentFragment(doc));
+    expect(blocks[0].text).toBe('see [cite:arXiv:2510.00908] and elsewhere');
+    expect(blocks[0].inlines).toBeDefined();
+    expect(blocks[0].inlines).toHaveLength(1);
+    expect(blocks[0].inlines![0]).toMatchObject({
+      type: 'citation',
+      label: '[cite:arXiv:2510.00908]',
+    });
+    expect(blocks[0].inlines![0].attrs.arxivId).toBe('2510.00908');
+  });
+});
+
+
 describe('revision', () => {
   test('changes when document mutates', () => {
     const doc = freshDoc();

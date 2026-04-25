@@ -40,9 +40,14 @@ Protocol: anthill-agent-bridge/1
 
 2. GET {{BRIDGE_URL}}/documents/{{DOCUMENT_ID}}/snapshot
    Returns: { documentId, title, baseRevision, blockCount,
-              blocks: [{ ref, type, text, attrs, proof }],
+              blocks: [{ ref, type, text, attrs, proof, inlines? }],
               hasLiveClients }
    Each block has a stable ref ("b1", "b2", ...) you pass back to edit it.
+   `text` is a flattened preview that includes positional markers for any
+   non-text inline children (e.g. "...as shown in [cite:arXiv:2510.00908v1]").
+   `inlines` (when present) is the structured list of those children — for
+   citations: { type: "citation", label: "[cite:arXiv:...]",
+               attrs: { arxivId, chunkIndex, title, score, ... } }.
    `baseRevision` is your optimistic-locking token — pass it on /edit to
    refuse stale writes (409 STALE_REVISION).
 
@@ -61,10 +66,34 @@ Protocol: anthill-agent-bridge/1
   appendBlocks     { type, blocks: PlateBlock[] }
   insertBlocksAfter   { type, afterRef: "b3", blocks: [...] }
   insertBlocksBefore  { type, beforeRef: "b3", blocks: [...] }
-  replaceBlock     { type, ref: "b3", blocks: [...] }
-  deleteBlock      { type, ref: "b3" }
-  setBlockText     { type, ref: "b3", text: "plain text only, drops marks" }
+  replaceBlock     { type, ref: "b3", blocks: [...], dropInlineElements?: false }
+  deleteBlock      { type, ref: "b3", dropInlineElements?: false }
+  setBlockText     { type, ref: "b3", text: "plain text", dropInlineElements?: false }
   setTitle         { type, title: "New document title" }
+
+== Inline elements (citations) — IMPORTANT ==
+
+Paragraphs may contain inline children that are NOT plain text — most
+commonly the editor's `citation` badges, which carry provenance the user
+cares about (arxivId, chunkIndex, search trace, ...). The bridge
+automatically preserves these across destructive edits:
+
+  - setBlockText keeps existing inline children and appends them after
+    the new text. The agent never has to think about it.
+  - replaceBlock lifts the original block's inline children onto the
+    last block in the replacement.
+  - deleteBlock REFUSES (409 INLINE_ELEMENTS_WOULD_BE_LOST) if the
+    target block carries any inline children.
+
+If the user explicitly asks you to remove a citation, set
+`dropInlineElements: true` on the op. Otherwise leave it false (the
+default). When the bridge preserves something, the response includes
+`preservedInlines: N` so you can mention it to the user.
+
+You may also include citation children directly in your blocks if you
+want to author a brand-new citation: add a child element of the form
+`{ type: "citation", arxivId: "<id>", chunkIndex: 0, title: "...",
+   score: 0.0, children: [{ text: "" }] }` inside `children`.
 
 == PlateBlock shape ==
 
@@ -87,6 +116,9 @@ Supported block types out of the box:
   400 BAD_REQUEST
   404 NOT_FOUND or BLOCK_REF_NOT_FOUND
   409 STALE_REVISION                            (refetch /snapshot, retry)
+  409 INLINE_ELEMENTS_WOULD_BE_LOST             (block has citations; pass
+                                                 dropInlineElements: true
+                                                 only if user asked)
   409 IDEMPOTENCY_KEY_REUSED_DIFFERENT_BODY     (use a fresh UUID)
 
 == Worked example — append a section to the document ==

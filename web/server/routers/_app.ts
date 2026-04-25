@@ -2,6 +2,7 @@ import { z } from "zod";
 
 import { backendFetch } from "../api";
 import { publicProcedure, router } from "../trpc";
+import { agentsRouter } from "./agents";
 import { documentsRouter } from "./documents";
 
 const healthSchema = z.object({
@@ -42,6 +43,7 @@ const paperResponseSchema = z.object({
 });
 
 export const appRouter = router({
+  agents: agentsRouter,
   documents: documentsRouter,
 
   health: publicProcedure.query(async () => {

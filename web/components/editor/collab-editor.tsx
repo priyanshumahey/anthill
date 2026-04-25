@@ -61,7 +61,9 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { AutoformatKit } from '@/components/editor/plugins/autoformat-kit';
+import { CitationSuggestKit } from '@/components/editor/plugins/citation-suggest-kit';
 import { MarkdownKit } from '@/components/editor/plugins/markdown-kit';
+import { Bibliography } from '@/components/editor/bibliography';
 import { EditorToolbar } from '@/components/editor/editor-toolbar';
 import { PresenceStack } from '@/components/editor/presence-stack';
 import { RemoteCursorOverlay } from '@/components/editor/remote-cursor-overlay';
@@ -239,6 +241,7 @@ export function CollabEditor({
         CodeSyntaxPlugin.withComponent(CodeSyntaxLeaf),
         TrailingBlockPlugin,
         ...AutoformatKit,
+        ...CitationSuggestKit,
         ...(yjsPlugin ? [yjsPlugin] : []),
       ],
       value: () => normalizeValue(initialContent),
@@ -324,8 +327,11 @@ export function CollabEditor({
             <Editor
               variant="default"
               placeholder={placeholder}
-              className="px-12 pt-8 pb-32 sm:px-[max(64px,calc(50%-380px))]"
+              className="px-8 pt-8 pb-12 sm:px-[max(48px,calc(50%-560px))]"
             />
+            <div className="px-8 pb-32 sm:px-[max(48px,calc(50%-560px))]">
+              <Bibliography />
+            </div>
           </EditorContainer>
 
           {/* Status pill */}

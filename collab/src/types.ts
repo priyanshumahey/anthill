@@ -9,12 +9,29 @@ export interface PlateBlock {
 }
 export type PlateValue = PlateBlock[];
 
+export interface SnapshotInline {
+  /** Inline element type, e.g. "citation". */
+  type: string;
+  /** Short positional marker (e.g. "[cite:arXiv:2510.00908v1]") that also
+   *  appears in the block's `text` preview at the inline's location. */
+  label?: string;
+  /** Full attribute payload of the inline element (everything but `type`
+   *  and `children`). For citations this includes `arxivId`, `chunkIndex`,
+   *  `title`, `score`, etc. */
+  attrs: Record<string, unknown>;
+}
+
 export interface SnapshotBlock {
   ref: string;
   type: string;
   text: string;
   attrs: Record<string, unknown>;
   proof?: { author?: string; runId?: string };
+  /** Inline element children (citations, mentions, ...) attached to this
+   *  block. Present only when the block has at least one such child.
+   *  Agents MUST treat these as preserved-by-default across destructive
+   *  edits unless they explicitly pass `dropInlineElements: true`. */
+  inlines?: SnapshotInline[];
 }
 
 export interface SnapshotResponse {
@@ -54,17 +71,26 @@ export interface ReplaceBlockOp {
   type: 'replaceBlock';
   ref: string;
   blocks: PlateBlock[];
+  /** Opt out of citation/inline preservation. Default false: any inline
+   *  elements on the original block are appended to the last new block. */
+  dropInlineElements?: boolean;
 }
 
 export interface DeleteBlockOp {
   type: 'deleteBlock';
   ref: string;
+  /** Opt out of the citation guard. Default false: deleting a block that
+   *  carries inline citations fails with INLINE_ELEMENTS_WOULD_BE_LOST. */
+  dropInlineElements?: boolean;
 }
 
 export interface SetBlockTextOp {
   type: 'setBlockText';
   ref: string;
   text: string;
+  /** Opt out of inline preservation. Default false: existing inline
+   *  elements (citations, etc.) are kept, appended after the new text. */
+  dropInlineElements?: boolean;
 }
 
 export interface SetTitleOp {
@@ -101,6 +127,9 @@ export interface EditResponse {
   baseRevision: string;
   blockCount: number;
   newRefs: string[];
+  /** Number of inline elements (citations, ...) auto-preserved across
+   *  destructive ops in this batch. 0 when nothing needed preserving. */
+  preservedInlines?: number;
 }
 
 export type BridgeErrorCode =
@@ -109,6 +138,7 @@ export type BridgeErrorCode =
   | 'NOT_FOUND'
   | 'STALE_REVISION'
   | 'BLOCK_REF_NOT_FOUND'
+  | 'INLINE_ELEMENTS_WOULD_BE_LOST'
   | 'IDEMPOTENCY_KEY_REUSED_DIFFERENT_BODY'
   | 'INTERNAL_ERROR';
 

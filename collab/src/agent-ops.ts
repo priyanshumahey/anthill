@@ -7,17 +7,23 @@ import type {
   PlateBlock,
 } from './types';
 import {
+  appendInlineElements,
   blockCountOf,
+  extractInlineElements,
   getBlockByRef,
   getContentFragment,
   plateBlockToYText,
   positionAfterRef,
-  setYTextPlainText,
+  setBlockTextPreservingInlines,
+  yTextToPlateBlock,
 } from './plate-yjs';
 
 export interface ApplyOpsResult {
   applied: number;
   newRefs: string[];
+  /** How many inline elements (citations, ...) were auto-preserved across
+   *  destructive ops in this batch. */
+  preservedInlines: number;
 }
 
 export class BridgeOpError extends Error {
@@ -25,6 +31,7 @@ export class BridgeOpError extends Error {
     public readonly code:
       | 'BAD_REQUEST'
       | 'BLOCK_REF_NOT_FOUND'
+      | 'INLINE_ELEMENTS_WOULD_BE_LOST'
       | 'INTERNAL_ERROR',
     message: string,
     public readonly details?: Record<string, unknown>,
@@ -56,6 +63,7 @@ export function applyOps(
 
   let pendingTitle: string | null = null;
   const newRefs: string[] = [];
+  let preservedInlines = 0;
 
   const undoManager = new Y.UndoManager(fragment, {
     trackedOrigins: new Set<unknown>([origin]),
@@ -128,6 +136,13 @@ export function applyOps(
               );
             }
             const refOrdinal = ordinalOfRef(op.ref);
+            // Snapshot any inline children (citations, ...) before the
+            // original block disappears, so we can re-attach them to the
+            // last new block. Agents almost never know these exist when
+            // they call replaceBlock based on the text preview.
+            const carriedInlines = op.dropInlineElements
+              ? []
+              : extractInlineElements(yTextToPlateBlock(found.element));
             const els = op.blocks.map((b) =>
               plateBlockToYText(stampProvenance(b, identity)),
             );
@@ -135,6 +150,10 @@ export function applyOps(
             fragment.insert(found.index, els);
             for (let i = 0; i < els.length; i++) {
               newRefs.push(`b${refOrdinal + i}`);
+            }
+            if (carriedInlines.length > 0 && els.length > 0) {
+              appendInlineElements(els[els.length - 1]!, carriedInlines);
+              preservedInlines += carriedInlines.length;
             }
             break;
           }
@@ -146,6 +165,21 @@ export function applyOps(
                 `ref ${op.ref} not found`,
                 { ref: op.ref },
               );
+            }
+            if (!op.dropInlineElements) {
+              const inlines = extractInlineElements(
+                yTextToPlateBlock(found.element),
+              );
+              if (inlines.length > 0) {
+                throw new BridgeOpError(
+                  'INLINE_ELEMENTS_WOULD_BE_LOST',
+                  `block ${op.ref} carries ${inlines.length} inline element(s) (e.g. citations); pass "dropInlineElements": true to delete anyway, or replaceBlock with a block that re-uses them`,
+                  {
+                    ref: op.ref,
+                    inlineTypes: inlines.map((i) => i.type),
+                  },
+                );
+              }
             }
             fragment.delete(found.index, 1);
             break;
@@ -159,7 +193,12 @@ export function applyOps(
                 { ref: op.ref },
               );
             }
-            setYTextPlainText(found.element, op.text);
+            const kept = setBlockTextPreservingInlines(
+              found.element,
+              op.text,
+              { dropInlines: op.dropInlineElements === true },
+            );
+            preservedInlines += kept.length;
             found.element.setAttribute(
               'proofTypedBy',
               `ai:${identity.agentId}`,
@@ -201,7 +240,7 @@ export function applyOps(
     meta.setTitle(pendingTitle);
   }
 
-  return { applied: ops.length, newRefs };
+  return { applied: ops.length, newRefs, preservedInlines };
 }
 
 function stampProvenance(
