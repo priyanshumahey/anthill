@@ -39,6 +39,7 @@ import {
   type CitationCandidate,
   type TCitationElement,
 } from '@/components/ui/citation-node';
+import { runCitationVerification } from '@/lib/citation-verification';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -415,6 +416,7 @@ function acceptSuggestion(
     takenMs: sug.takenMs,
     searchedAt: sug.fetchedAt,
     trace,
+    verification: { state: 'pending' },
     children: [{ text: '' }],
   }));
 
@@ -425,6 +427,186 @@ function acceptSuggestion(
   } catch {
     /* selection may already be past the void */
   }
+
+  // Fire Nia verification for each inserted citation, in the background.
+  // Each node carries `searchedAt` from the suggestion, so we can find it
+  // again by (arxivId, chunkIndex, searchedAt) even after Yjs reorders things.
+  for (const node of nodes) {
+    void runCitationVerification(editor, node, sug.query);
+  }
+}
+
+// ── Nia verification (fire-and-forget per inserted citation) ───────────────
+
+interface CreateRunResponse {
+  id: string;
+  status: string;
+}
+
+interface SsePayload {
+  seq: number;
+  kind: string;
+  message?: string | null;
+  data?: Record<string, unknown> | null;
+}
+
+/**
+ * Updates the inserted citation node with the latest verification state.
+ * Walks the tree to find the matching node by stable identity (arxivId +
+ * chunkIndex + searchedAt) so concurrent insertions and Yjs ops can't mix
+ * verdicts up.
+ */
+function patchVerification(
+  editor: PlateEditor,
+  match: { arxivId: string; chunkIndex: number; searchedAt: string | null },
+  patch: Partial<CitationVerification>,
+) {
+  const entries = editor.api.nodes<TCitationElement>({
+    at: [],
+    match: (n) => {
+      const el = n as Partial<TCitationElement>;
+      return (
+        el.type === 'citation' &&
+        el.arxivId === match.arxivId &&
+        el.chunkIndex === match.chunkIndex &&
+        (el.searchedAt ?? null) === match.searchedAt
+      );
+    },
+  });
+
+  for (const [node, path] of entries) {
+    const next: CitationVerification = {
+      ...(node.verification ?? { state: 'pending' }),
+      ...patch,
+    };
+    editor.tf.setNodes<TCitationElement>({ verification: next }, { at: path });
+  }
+}
+
+async function verifyCitation(
+  editor: PlateEditor,
+  node: TCitationElement,
+  claim: string,
+) {
+  const match = {
+    arxivId: node.arxivId,
+    chunkIndex: node.chunkIndex,
+    searchedAt: node.searchedAt ?? null,
+  };
+
+  let runId: string | undefined;
+  let es: EventSource | undefined;
+
+  try {
+    const res = await fetch('/api/agents/runs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        agent: 'ground_citation',
+        input: { arxiv_id: node.arxivId, claim },
+      }),
+    });
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '');
+      throw new Error(`HTTP ${res.status}: ${detail.slice(0, 200)}`);
+    }
+    const created = (await res.json()) as CreateRunResponse;
+    runId = created.id;
+    patchVerification(editor, match, { runId });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'failed to start run';
+    patchVerification(editor, match, { state: 'error', message });
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    es = new EventSource(`/api/agents/runs/${runId}/events`);
+
+    const close = () => {
+      try {
+        es?.close();
+      } catch {
+        /* noop */
+      }
+      resolve();
+    };
+
+    const ingest = (raw: string) => {
+      let payload: SsePayload;
+      try {
+        payload = JSON.parse(raw);
+      } catch {
+        return;
+      }
+      const data = (payload.data ?? {}) as Record<string, unknown>;
+
+      if (payload.kind === 'finding' && data.kind === 'grounded_citation') {
+        const supports = !!data.supports_claim;
+        patchVerification(editor, match, {
+          state: supports ? 'supports' : 'rejects',
+          supports,
+          confidence:
+            typeof data.confidence === 'number' ? data.confidence : undefined,
+          exactQuote:
+            typeof data.exact_quote === 'string' ? data.exact_quote : undefined,
+          pageNumber:
+            typeof data.page_number === 'number'
+              ? data.page_number
+              : data.page_number === null
+                ? null
+                : undefined,
+          sectionPath:
+            typeof data.section_path === 'string'
+              ? data.section_path
+              : data.section_path === null
+                ? null
+                : undefined,
+          rationale:
+            typeof data.rationale === 'string' ? data.rationale : undefined,
+          niaTookMs:
+            typeof data.nia_took_ms === 'number' ? data.nia_took_ms : undefined,
+          verifiedAt: new Date().toISOString(),
+        });
+      } else if (payload.kind === 'step' && data.step === 'nia_not_ready') {
+        patchVerification(editor, match, {
+          state: 'not_ready',
+          message:
+            typeof data.status === 'string'
+              ? `Nia source status: ${data.status}`
+              : 'Nia is still indexing this paper',
+        });
+      } else if (payload.kind === 'status') {
+        const status = (data.status as string | undefined) ?? null;
+        if (status === 'failed' || status === 'cancelled') {
+          patchVerification(editor, match, {
+            state: 'error',
+            message: payload.message ?? `run ${status}`,
+          });
+        }
+        if (
+          status === 'succeeded' ||
+          status === 'failed' ||
+          status === 'cancelled'
+        ) {
+          close();
+        }
+      } else if (payload.kind === 'error') {
+        patchVerification(editor, match, {
+          state: 'error',
+          message: payload.message ?? 'agent error',
+        });
+      }
+    };
+
+    for (const kind of ['status', 'log', 'step', 'finding', 'error'] as const) {
+      es.addEventListener(kind, (ev) => ingest((ev as MessageEvent).data));
+    }
+    es.onmessage = (ev) => ingest(ev.data);
+    es.onerror = () => {
+      // EventSource auto-reconnects; only treat sustained failure as error.
+      // Leave the verdict pending and let the run timeout itself.
+    };
+  });
 }
 
 // ── Floating ghost overlay ─────────────────────────────────────────────────

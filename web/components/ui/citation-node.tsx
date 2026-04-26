@@ -19,12 +19,14 @@ import type { TElement } from 'platejs';
 import {
   PlateElement,
   type PlateElementProps,
+  useEditorRef,
   useReadOnly,
   useSelected,
 } from 'platejs/react';
-import { Sparkles, ExternalLink, ChevronDown } from 'lucide-react';
+import { Sparkles, ExternalLink, ChevronDown, BadgeCheck, AlertTriangle, Loader2, RefreshCw } from 'lucide-react';
 
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { runCitationVerification } from '@/lib/citation-verification';
 import { cn } from '@/lib/utils';
 
 export interface CitationCandidate {
@@ -34,6 +36,36 @@ export interface CitationCandidate {
   score: number;
   /** Matched chunk text from the backend; clipped to ~600 chars at insert time. */
   snippet?: string | null;
+}
+
+/**
+ * Verification verdict from the Nia document agent. Filled asynchronously
+ * after the citation is inserted — `state` walks `pending` -> one of the
+ * terminals as the agent run progresses. The element is updated through Yjs
+ * so collaborators see the badge change colour live.
+ */
+export interface CitationVerification {
+  state: 'pending' | 'supports' | 'rejects' | 'not_ready' | 'error';
+  /** Source agent run id, useful for "open trace" debugging. */
+  runId?: string;
+  /** True when the paper actually backs the writer's claim. */
+  supports?: boolean;
+  /** 0.0–1.0; how strongly Nia thinks the paper supports/rejects. */
+  confidence?: number;
+  /** Verbatim quote pulled from the paper. */
+  exactQuote?: string;
+  /** Page number in the source PDF, if known. */
+  pageNumber?: number | null;
+  /** "Methods > Architecture" style breadcrumb. */
+  sectionPath?: string | null;
+  /** One-sentence rationale the writer can read. */
+  rationale?: string;
+  /** Total wall time spent inside Nia. */
+  niaTookMs?: number;
+  /** Human-readable error message when state === 'error'. */
+  message?: string;
+  /** ISO timestamp of when the verdict was recorded. */
+  verifiedAt?: string;
 }
 
 export interface TCitationElement extends TElement {
@@ -52,6 +84,8 @@ export interface TCitationElement extends TElement {
   searchedAt?: string | null;
   /** Top-k candidates returned by the backend, in score order. */
   trace?: CitationCandidate[];
+  /** Nia verification verdict, populated asynchronously. */
+  verification?: CitationVerification;
   children: [{ text: '' }];
 }
 
@@ -61,9 +95,20 @@ function citationLabel(el: TCitationElement) {
 
 export function CitationElement(props: PlateElementProps<TCitationElement>) {
   const { element } = props;
+  const editor = useEditorRef();
   const selected = useSelected();
   const readOnly = useReadOnly();
   const [open, setOpen] = React.useState(false);
+
+  const verification = element.verification;
+  const tone = verificationTone(verification);
+
+  const handleRecheck = React.useCallback(() => {
+    const claim = element.query;
+    if (!claim) return;
+    void runCitationVerification(editor, element, claim);
+  }, [editor, element]);
+  const canRecheck = !readOnly && !!element.query;
 
   return (
     <PlateElement
@@ -80,7 +125,8 @@ export function CitationElement(props: PlateElementProps<TCitationElement>) {
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger
           className={cn(
-            'inline-flex cursor-pointer items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-0 text-[11px] font-medium leading-tight text-primary align-baseline transition hover:bg-primary/20 focus:outline-none focus:ring-2 focus:ring-ring',
+            'inline-flex cursor-pointer items-center gap-1 rounded-sm border px-1.5 py-0 text-[11px] font-medium leading-tight align-baseline transition focus:outline-none focus:ring-2 focus:ring-ring',
+            tone.badge,
             selected && 'ring-2 ring-ring',
           )}
           onMouseDown={(e) => {
@@ -94,17 +140,75 @@ export function CitationElement(props: PlateElementProps<TCitationElement>) {
               {(element.score * 100).toFixed(0)}%
             </span>
           )}
+          {tone.icon ? <tone.icon className={cn('size-3', tone.iconClass)} /> : null}
         </PopoverTrigger>
         <PopoverContent
           align="start"
           sideOffset={6}
-          className="w-[22rem] gap-3 p-3 text-xs"
+          className="w-[24rem] gap-3 p-3 text-xs"
         >
-          <CitationTrace element={element} />
+          <CitationTrace
+            element={element}
+            onRecheck={canRecheck ? handleRecheck : undefined}
+          />
         </PopoverContent>
       </Popover>
     </PlateElement>
   );
+}
+
+interface BadgeTone {
+  badge: string;
+  icon: React.ComponentType<{ className?: string }> | null;
+  iconClass: string;
+}
+
+const TONE_NEUTRAL: BadgeTone = {
+  badge: 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/20',
+  icon: null,
+  iconClass: '',
+};
+
+function verificationTone(v: CitationVerification | undefined): BadgeTone {
+  if (!v) return TONE_NEUTRAL;
+  switch (v.state) {
+    case 'pending':
+      return {
+        badge: 'border-primary/30 bg-primary/10 text-primary hover:bg-primary/20',
+        icon: Loader2,
+        iconClass: 'animate-spin opacity-70',
+      };
+    case 'supports':
+      return {
+        badge:
+          'border-emerald-400/40 bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-300',
+        icon: BadgeCheck,
+        iconClass: 'opacity-90',
+      };
+    case 'rejects':
+      return {
+        badge:
+          'border-amber-400/40 bg-amber-500/10 text-amber-700 hover:bg-amber-500/15 dark:text-amber-300',
+        icon: AlertTriangle,
+        iconClass: 'opacity-90',
+      };
+    case 'not_ready':
+      return {
+        badge:
+          'border-muted-foreground/30 bg-muted/40 text-muted-foreground hover:bg-muted/60',
+        icon: Loader2,
+        iconClass: 'opacity-60',
+      };
+    case 'error':
+      return {
+        badge:
+          'border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/15',
+        icon: AlertTriangle,
+        iconClass: 'opacity-90',
+      };
+    default:
+      return TONE_NEUTRAL;
+  }
 }
 
 function truncate(text: string, max: number) {
@@ -112,7 +216,13 @@ function truncate(text: string, max: number) {
   return `${text.slice(0, max).trimEnd()}…`;
 }
 
-function CitationTrace({ element }: { element: TCitationElement }) {
+function CitationTrace({
+  element,
+  onRecheck,
+}: {
+  element: TCitationElement;
+  onRecheck?: () => void;
+}) {
   const trace = element.trace ?? [];
   const others = trace.filter(
     (t) => !(t.arxivId === element.arxivId && t.chunkIndex === element.chunkIndex),
@@ -120,6 +230,11 @@ function CitationTrace({ element }: { element: TCitationElement }) {
 
   return (
     <div className="flex flex-col gap-3">
+      {/* Nia verification — the headline */}
+      {element.verification && (
+        <NiaVerification v={element.verification} onRecheck={onRecheck} />
+      )}
+
       {/* Header: title + meta */}
       <div className="flex flex-col gap-1.5">
         <a
@@ -241,5 +356,153 @@ function RunnerUp({ candidate }: { candidate: CitationCandidate }) {
         </p>
       )}
     </li>
+  );
+}
+
+// ── Nia verification block ─────────────────────────────────────────────────
+
+function NiaVerification({
+  v,
+  onRecheck,
+}: {
+  v: CitationVerification;
+  onRecheck?: () => void;
+}) {
+  if (v.state === 'pending') {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-primary/20 bg-primary/5 p-2 text-[11px] text-primary">
+        <Loader2 className="size-3 animate-spin" />
+        <span>Verifying with Nia…</span>
+      </div>
+    );
+  }
+
+  if (v.state === 'not_ready') {
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-muted-foreground/30 bg-muted/40 p-2 text-[11px] text-muted-foreground">
+        <div className="flex items-center gap-1.5 font-medium">
+          <Loader2 className="size-3 opacity-60" />
+          Nia hasn&apos;t finished indexing this paper
+        </div>
+        {v.message ? (
+          <blockquote className="rounded bg-background/70 px-2 py-1.5 text-[11px] italic leading-snug text-foreground/80">
+            &ldquo;{v.message}&rdquo;
+          </blockquote>
+        ) : (
+          <p className="text-[10px] opacity-80">
+            Indexing a fresh arXiv paper into Nia takes a couple of minutes. The
+            citation stays as-is in the meantime.
+          </p>
+        )}
+        {onRecheck && (
+          <RecheckButton onClick={onRecheck} label="Re-check now" tone="muted" />
+        )}
+      </div>
+    );
+  }
+
+  if (v.state === 'error') {
+    return (
+      <div className="flex flex-col gap-2 rounded-md border border-destructive/30 bg-destructive/5 p-2 text-[11px] text-destructive">
+        <div className="flex items-center gap-1.5 font-medium">
+          <AlertTriangle className="size-3" /> Nia verification failed
+        </div>
+        {v.message && <p className="text-[10px] opacity-80">{v.message}</p>}
+        {onRecheck && (
+          <RecheckButton onClick={onRecheck} label="Try again" tone="destructive" />
+        )}
+      </div>
+    );
+  }
+
+  const supports = v.state === 'supports';
+  const tone = supports
+    ? 'border-emerald-400/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+    : 'border-amber-400/40 bg-amber-500/10 text-amber-700 dark:text-amber-300';
+  const Icon = supports ? BadgeCheck : AlertTriangle;
+  const headline = supports
+    ? 'Verified by Nia'
+    : 'This paper does not support your claim';
+  const conf =
+    typeof v.confidence === 'number'
+      ? `${Math.round(v.confidence * 100)}% confidence`
+      : null;
+
+  return (
+    <div className={cn('flex flex-col gap-2 rounded-md border p-2', tone)}>
+      <div className="flex items-center gap-1.5 text-[11px] font-medium">
+        <Icon className="size-3.5" />
+        <span>{headline}</span>
+        {conf && (
+          <span className="ml-auto font-mono text-[10px] tabular-nums opacity-80">
+            {conf}
+          </span>
+        )}
+      </div>
+
+      {v.exactQuote && (
+        <blockquote className="rounded bg-background/70 px-2 py-1.5 text-[11px] italic leading-snug text-foreground/90">
+          &ldquo;{v.exactQuote}&rdquo;
+        </blockquote>
+      )}
+
+      <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px] opacity-90">
+        {typeof v.pageNumber === 'number' && <span>p.{v.pageNumber}</span>}
+        {v.sectionPath && (
+          <>
+            {typeof v.pageNumber === 'number' && <span className="opacity-50">·</span>}
+            <span>{v.sectionPath}</span>
+          </>
+        )}
+        {typeof v.niaTookMs === 'number' && (
+          <>
+            <span className="opacity-50">·</span>
+            <span className="tabular-nums">{(v.niaTookMs / 1000).toFixed(1)}s</span>
+          </>
+        )}
+        {onRecheck && (
+          <button
+            type="button"
+            onClick={onRecheck}
+            className="ml-auto inline-flex items-center gap-1 rounded px-1 py-0.5 font-sans text-[10px] opacity-70 transition hover:bg-background/60 hover:opacity-100"
+            title="Re-run Nia verification for this citation"
+          >
+            <RefreshCw className="size-2.5" /> Re-check
+          </button>
+        )}
+      </div>
+
+      {v.rationale && (
+        <p className="text-[10px] leading-snug opacity-90">{v.rationale}</p>
+      )}
+    </div>
+  );
+}
+
+function RecheckButton({
+  onClick,
+  label,
+  tone,
+}: {
+  onClick: () => void;
+  label: string;
+  tone: 'muted' | 'destructive';
+}) {
+  const cls =
+    tone === 'destructive'
+      ? 'border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20'
+      : 'border-muted-foreground/30 bg-background/60 text-foreground hover:bg-background';
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'inline-flex w-fit items-center gap-1.5 rounded border px-2 py-1 text-[10px] font-medium transition',
+        cls,
+      )}
+    >
+      <RefreshCw className="size-3" />
+      {label}
+    </button>
   );
 }

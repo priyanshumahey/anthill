@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from . import (
     add_comment,
     citation_inserter,
+    ground_citation,
     insert_citation,
     literature_search,
     suggest_edit,
@@ -36,6 +37,7 @@ AGENTS: dict[str, AgentFn] = {
     "suggest_edit": suggest_edit.run,
     "summarize_selection": summarize_selection.run,
     "citation_inserter": citation_inserter.run,
+    "ground_citation": ground_citation.run,
 }
 
 
