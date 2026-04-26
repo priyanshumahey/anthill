@@ -22,9 +22,7 @@ type Crumb = {
 };
 
 const STATIC_LABELS: Record<string, string> = {
-  dashboard: "Home",
   documents: "Documents",
-  workspaces: "Workspaces",
   search: "Search",
   agents: "Agents",
 };
@@ -67,7 +65,7 @@ function useBreadcrumbs(): Crumb[] {
     const segment = segments[i];
     acc += `/${segment}`;
     if (i === 0 && segment === "dashboard") {
-      crumbs.push({ label: "Home", href: "/dashboard" });
+      // The dashboard root has no page; skip it in the breadcrumb.
       continue;
     }
     if (i === 2 && id) {

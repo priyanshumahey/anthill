@@ -15,6 +15,7 @@ from . import (
     ground_citation,
     insert_citation,
     literature_search,
+    review_response,
     suggest_edit,
     summarize_selection,
 )
@@ -38,6 +39,7 @@ AGENTS: dict[str, AgentFn] = {
     "summarize_selection": summarize_selection.run,
     "citation_inserter": citation_inserter.run,
     "ground_citation": ground_citation.run,
+    "review_response": review_response.run,
 }
 
 

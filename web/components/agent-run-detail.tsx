@@ -14,7 +14,6 @@ import { AgentStatusBadge } from "@/components/agents-panel";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAgentRunStream } from "@/hooks/use-agent-run-stream";
 import { trpc } from "@/lib/trpc";
 import type { AgentRun, RunEvent } from "@/server/routers/agents";

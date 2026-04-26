@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Add your description here"
 requires-python = ">=3.13"
 dependencies = [
+    "agentmail>=0.0.30",
     "arxiv>=2.0",
     "chromadb>=1.5.5",
     "fastapi>=0.136.1",

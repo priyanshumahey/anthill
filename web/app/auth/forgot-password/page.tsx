@@ -8,7 +8,7 @@ export default async function Page() {
   const {
     data: { user },
   } = await supabase.auth.getUser()
-  if (user) redirect('/dashboard')
+  if (user) redirect('/dashboard/documents')
 
   return (
     <div className="flex min-h-svh w-full items-center justify-center p-6 md:p-10">

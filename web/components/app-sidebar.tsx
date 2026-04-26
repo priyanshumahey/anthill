@@ -1,6 +1,6 @@
 "use client"
 
-import { Bot, FileText, Home, LayoutGrid, Search } from "lucide-react"
+import { Bot, FileText, Search } from "lucide-react"
 import type * as React from "react"
 
 import { NavMain, type NavSection } from "@/components/nav-main"
@@ -17,8 +17,6 @@ import {
 const sections: NavSection[] = [
     {
         items: [
-            { title: "Home", url: "/dashboard", icon: Home, exact: true },
-            { title: "Workspaces", url: "/dashboard/workspaces", icon: LayoutGrid },
             { title: "Documents", url: "/dashboard/documents", icon: FileText },
             { title: "Agents", url: "/dashboard/agents", icon: Bot },
             { title: "Search", url: "/dashboard/search", icon: Search },

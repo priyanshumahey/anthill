@@ -42,13 +42,13 @@ export function SignUpForm({ className, ...props }: React.ComponentPropsWithoutR
         email,
         password,
         options: {
-          emailRedirectTo: `${window.location.origin}/dashboard`,
+          emailRedirectTo: `${window.location.origin}/dashboard/documents`,
         },
       })
       if (error) throw error
       // Email confirmation is disabled in local Supabase, so the user is signed in
       // immediately. Skip the "check your email" page and go straight to the app.
-      router.push('/dashboard')
+      router.push('/dashboard/documents')
     } catch (error: unknown) {
       setError(error instanceof Error ? error.message : 'An error occurred')
     } finally {
