@@ -66,6 +66,7 @@ async def _execute(run: AgentRun, tracer: Tracer, store: RunStore) -> None:
         await tracer.status(RunStatus.running, "Running")
         result = await fn(run.input, tracer)
         run.result = result
+        store.save(run)
         await tracer.status(RunStatus.succeeded, "Done")
     except asyncio.CancelledError:
         await tracer.status(RunStatus.cancelled, "Cancelled")
@@ -74,6 +75,7 @@ async def _execute(run: AgentRun, tracer: Tracer, store: RunStore) -> None:
         await tracer.error(str(e))
         await tracer.status(RunStatus.failed, "Failed")
     finally:
+        store.save(run)
         ch = store.channel(run.id)
         if ch is not None:
             await ch.close()

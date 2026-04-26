@@ -37,6 +37,7 @@ class Tracer:
             self.run.started_at = utcnow()
         if status in TERMINAL_STATUSES:
             self.run.finished_at = utcnow()
+        self.store.save(self.run)
         await self._emit("status", message=message, data={"status": status.value})
 
     async def log(self, message: str, **data: Any) -> None:
@@ -51,4 +52,5 @@ class Tracer:
 
     async def error(self, message: str) -> None:
         self.run.error = message
+        self.store.save(self.run)
         await self._emit("error", message=message)

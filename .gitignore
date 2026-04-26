@@ -9,6 +9,7 @@ node_modules/
 
 # Runtime caches
 *.nia_cache.db
+backend/.runs/
 
 # Local-only docs
 /PLAN.md

@@ -321,7 +321,15 @@ app.include_router(agents_router)
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    # Don't tear down the live agent runs (and their in-memory event channels)
+    # whenever someone touches a CLI script or a persisted run file is written.
+    uvicorn.run(
+        "main:app",
+        host="127.0.0.1",
+        port=8000,
+        reload=True,
+        reload_excludes=[".runs/*", "scripts/*", "*.json", "*.jsonl"],
+    )
 
 
 if __name__ == "__main__":
