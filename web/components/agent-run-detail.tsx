@@ -19,6 +19,7 @@ import { trpc } from "@/lib/trpc";
 import type { AgentRun, RunEvent } from "@/server/routers/agents";
 
 type Finding = {
+  // literature_search / citation_inserter
   rank?: number;
   arxiv_id?: string;
   title?: string | null;
@@ -27,6 +28,19 @@ type Finding = {
   score?: number;
   matched_query?: string;
   newly_indexed?: boolean;
+  // review_response / ground_citation
+  kind?: string;
+  anchor_ref?: string;
+  rationale?: string;
+  preview?: string;
+  block_ref?: string;
+  body?: string;
+  replacement?: string;
+  exact_quote?: string;
+  supports_claim?: boolean;
+  confidence?: number;
+  page_number?: number | string;
+  section_path?: string;
 };
 
 const KIND_ICONS: Record<string, React.ReactNode> = {
@@ -71,12 +85,103 @@ function EventRow({ ev }: { ev: RunEvent }) {
 }
 
 function FindingCard({ f }: { f: Finding }) {
+  // Two display modes: arxiv-style (literature search / citation inserter)
+  // vs. anchored-action style (review_response / ground_citation).
+  const isArxiv = Boolean(f.arxiv_id) && f.kind !== "grounded_citation";
+
+  if (isArxiv) {
+    return (
+      <Card className="p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex min-w-0 flex-col gap-1">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              {typeof f.rank === "number" && (
+                <span className="tabular-nums">#{f.rank}</span>
+              )}
+              {f.arxiv_id && (
+                <a
+                  href={`https://arxiv.org/abs/${f.arxiv_id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="font-mono hover:underline"
+                >
+                  arXiv:{f.arxiv_id}
+                </a>
+              )}
+              {typeof f.chunk_index === "number" && (
+                <span>· chunk {f.chunk_index}</span>
+              )}
+              {f.newly_indexed && (
+                <Badge
+                  variant="secondary"
+                  className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                >
+                  new
+                </Badge>
+              )}
+            </div>
+            {f.title && (
+              <a
+                href={`https://arxiv.org/abs/${f.arxiv_id}`}
+                target="_blank"
+                rel="noreferrer"
+                className="font-medium leading-snug hover:underline"
+              >
+                {f.title}
+              </a>
+            )}
+            {f.matched_query && (
+              <p className="text-[11px] text-muted-foreground">
+                matched: <span className="font-mono">{f.matched_query}</span>
+              </p>
+            )}
+          </div>
+          {typeof f.score === "number" && (
+            <Badge variant="secondary" className="tabular-nums">
+              {(f.score * 100).toFixed(1)}%
+            </Badge>
+          )}
+        </div>
+        {f.text && (
+          <p className="mt-2 line-clamp-3 text-xs text-muted-foreground">
+            {f.text}
+          </p>
+        )}
+      </Card>
+    );
+  }
+
+  // Generic / anchored-action style finding.
+  const kindLabel = f.kind ?? "finding";
+  const anchor = f.anchor_ref ?? f.block_ref ?? null;
+  const headline =
+    f.preview ??
+    f.replacement ??
+    f.body ??
+    f.exact_quote ??
+    f.rationale ??
+    f.title ??
+    "";
+
+  const KIND_BADGE: Record<string, string> = {
+    edit: "bg-blue-500/15 text-blue-700 dark:text-blue-300",
+    comment: "bg-amber-500/15 text-amber-700 dark:text-amber-300",
+    title: "bg-purple-500/15 text-purple-700 dark:text-purple-300",
+    grounded_citation: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+  };
+
   return (
     <Card className="p-3">
       <div className="flex items-start justify-between gap-2">
         <div className="flex min-w-0 flex-col gap-1">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="tabular-nums">#{f.rank}</span>
+          <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+            <Badge
+              variant="secondary"
+              className={KIND_BADGE[kindLabel] ?? ""}
+            >
+              {kindLabel}
+            </Badge>
+            {anchor && <span className="font-mono">{anchor}</span>}
             {f.arxiv_id && (
               <a
                 href={`https://arxiv.org/abs/${f.arxiv_id}`}
@@ -87,41 +192,53 @@ function FindingCard({ f }: { f: Finding }) {
                 arXiv:{f.arxiv_id}
               </a>
             )}
-            {typeof f.chunk_index === "number" && <span>· chunk {f.chunk_index}</span>}
-            {f.newly_indexed && (
+            {typeof f.page_number !== "undefined" && (
+              <span>· p.{f.page_number}</span>
+            )}
+            {f.section_path && (
+              <span className="truncate">· {f.section_path}</span>
+            )}
+            {typeof f.supports_claim === "boolean" && (
               <Badge
                 variant="secondary"
-                className="bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                className={
+                  f.supports_claim
+                    ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                    : "bg-red-500/15 text-red-700 dark:text-red-300"
+                }
               >
-                new
+                {f.supports_claim ? "supports" : "does not support"}
               </Badge>
             )}
           </div>
-          {f.title && (
-            <a
-              href={`https://arxiv.org/abs/${f.arxiv_id}`}
-              target="_blank"
-              rel="noreferrer"
-              className="font-medium leading-snug hover:underline"
-            >
-              {f.title}
-            </a>
+          {headline && (
+            <p className="text-sm leading-snug">
+              {headline.length > 320 ? headline.slice(0, 320) + "…" : headline}
+            </p>
           )}
-          {f.matched_query && (
-            <p className="text-[11px] text-muted-foreground">
-              matched: <span className="font-mono">{f.matched_query}</span>
+          {f.rationale && f.rationale !== headline && (
+            <p className="text-xs text-muted-foreground">
+              <span className="font-medium">why: </span>
+              {f.rationale}
+            </p>
+          )}
+          {f.exact_quote && f.exact_quote !== headline && (
+            <p className="border-l-2 border-border pl-2 text-xs italic text-muted-foreground">
+              “{f.exact_quote}”
             </p>
           )}
         </div>
-        {typeof f.score === "number" && (
+        {typeof f.confidence === "number" && (
+          <Badge variant="secondary" className="tabular-nums">
+            {(f.confidence * 100).toFixed(0)}%
+          </Badge>
+        )}
+        {typeof f.score === "number" && !f.confidence && (
           <Badge variant="secondary" className="tabular-nums">
             {(f.score * 100).toFixed(1)}%
           </Badge>
         )}
       </div>
-      {f.text && (
-        <p className="mt-2 line-clamp-3 text-xs text-muted-foreground">{f.text}</p>
-      )}
     </Card>
   );
 }
@@ -164,24 +281,45 @@ export function AgentRunDetail({ runId }: { runId: string }) {
   const liveStatus = stream.status ?? run?.status;
 
   // Findings come from streamed events (so they appear progressively) or
-  // from the final result if we missed them.
+  // from the final result if we missed them. Different agents shape their
+  // result payloads differently — we accept the common keys.
   const findings = useMemo<Finding[]>(() => {
     const fromStream = stream.events
       .filter((e) => e.kind === "finding")
       .map((e) => (e.data ?? {}) as Finding);
-    if (fromStream.length > 0) return fromStream.sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0));
-    const result = (run?.result ?? {}) as { papers?: Finding[] };
-    return result.papers ?? [];
+    if (fromStream.length > 0) {
+      // Stable order: by rank when present, otherwise insertion order.
+      return fromStream.some((f) => typeof f.rank === "number")
+        ? [...fromStream].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))
+        : fromStream;
+    }
+    const result = (run?.result ?? {}) as {
+      papers?: Finding[];
+      applied?: Finding[];
+      findings?: Finding[];
+    };
+    return result.papers ?? result.applied ?? result.findings ?? [];
   }, [stream.events, run?.result]);
 
   const traceRef = useRef<HTMLDivElement | null>(null);
+  // Track whether the user is "pinned" near the bottom so we only auto-scroll
+  // when they haven't deliberately scrolled up to read older events.
+  const pinnedToBottomRef = useRef(true);
+
   useEffect(() => {
-    // Auto-scroll trace to bottom while live.
-    if (stream.connected && traceRef.current) {
-      const el = traceRef.current;
+    const el = traceRef.current;
+    if (!el) return;
+    if (pinnedToBottomRef.current) {
       el.scrollTop = el.scrollHeight;
     }
-  }, [stream.events.length, stream.connected]);
+  }, [stream.events.length]);
+
+  const handleTraceScroll = () => {
+    const el = traceRef.current;
+    if (!el) return;
+    const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    pinnedToBottomRef.current = distanceFromBottom < 24;
+  };
 
   if (detail.isLoading) {
     return (
@@ -242,17 +380,23 @@ export function AgentRunDetail({ runId }: { runId: string }) {
         )}
       </div>
 
-      {/* Trace + findings: side-by-side on wide screens, stacked on mobile. */}
+      {/* Trace + findings: side-by-side on wide screens, stacked on mobile.
+          We give each pane an explicit height so its inner list scrolls
+          independently instead of pushing the page off-screen. */}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_1fr]">
-        <Card className="flex max-h-[70vh] flex-col p-0">
+        <Card className="flex h-[70vh] min-h-0 flex-col p-0">
           <div className="flex items-center justify-between border-b px-4 py-2">
             <h2 className="text-sm font-medium">Trace</h2>
             <span className="text-xs text-muted-foreground">
               {stream.events.length} event{stream.events.length === 1 ? "" : "s"}
             </span>
           </div>
-          <ScrollArea className="flex-1">
-            <div ref={traceRef} className="flex flex-col gap-1 p-3">
+          <div
+            ref={traceRef}
+            onScroll={handleTraceScroll}
+            className="min-h-0 flex-1 overflow-y-auto"
+          >
+            <div className="flex flex-col gap-1 p-3">
               {stream.events.length === 0 && (
                 <p className="text-sm text-muted-foreground">No events yet.</p>
               )}
@@ -260,17 +404,20 @@ export function AgentRunDetail({ runId }: { runId: string }) {
                 <EventRow key={ev.seq} ev={ev} />
               ))}
             </div>
-          </ScrollArea>
+          </div>
         </Card>
 
-        <Card className="flex max-h-[70vh] flex-col p-0">
+        <Card className="flex h-[70vh] min-h-0 flex-col p-0">
           <div className="flex items-center justify-between border-b px-4 py-2">
             <h2 className="text-sm font-medium">Findings</h2>
             <span className="text-xs text-muted-foreground">
-              {findings.length} paper{findings.length === 1 ? "" : "s"}
+              {findings.length}{" "}
+              {run.agent === "literature_search"
+                ? `paper${findings.length === 1 ? "" : "s"}`
+                : `item${findings.length === 1 ? "" : "s"}`}
             </span>
           </div>
-          <ScrollArea className="flex-1">
+          <div className="min-h-0 flex-1 overflow-y-auto">
             <div className="flex flex-col gap-2 p-3">
               {findings.length === 0 && (
                 <p className="text-sm text-muted-foreground">
@@ -280,10 +427,15 @@ export function AgentRunDetail({ runId }: { runId: string }) {
                 </p>
               )}
               {findings.map((f, i) => (
-                <FindingCard key={`${f.arxiv_id}-${f.chunk_index}-${i}`} f={f} />
+                <FindingCard
+                  key={`${f.arxiv_id ?? f.anchor_ref ?? f.block_ref ?? "f"}-${
+                    f.chunk_index ?? f.kind ?? ""
+                  }-${i}`}
+                  f={f}
+                />
               ))}
             </div>
-          </ScrollArea>
+          </div>
         </Card>
       </div>
     </div>

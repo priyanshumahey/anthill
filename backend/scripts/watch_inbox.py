@@ -1,28 +1,27 @@
 #!/usr/bin/env -S uv run python
 """Watch an AgentMail inbox and trigger `review_response` on every new email.
 
-This is the "send an email → see the document update" demo path. It opens a
-WebSocket to AgentMail (no public URL / tunnel needed), subscribes to
-`message.received` for the configured inbox, and for each incoming message
-POSTs to the FastAPI backend at `/agents/runs` so the existing agent runtime
-handles snapshotting, Claude planning, bridge edits, and reply email.
+Polling-based — every `--poll` seconds we list the inbox and fire the agent
+on anything we haven't seen before. Polling is boring but it always works,
+which matters more than latency for a review demo. (Earlier WebSocket-based
+version had silent-dropouts in this environment; polling sidesteps the issue.)
 
 Routing — which document gets edited:
 
   1. If the email subject contains a tag like `[anthill:<uuid>]`, that
-     document_id wins. (Lets you run multiple papers off one inbox.)
+     document_id wins. (Lets one inbox drive multiple papers.)
   2. Otherwise the `--doc` CLI flag (or `ANTHILL_REVIEW_DOC_ID` env var)
      is used as the default.
 
 Default inbox: `anthill@agentmail.to` — override with `--inbox` (address) or
-`ANTHILL_REVIEW_INBOX_ADDRESS`. The script looks up the inbox_id on startup.
+`ANTHILL_REVIEW_INBOX_ADDRESS`.
 
 Usage:
     cd backend && source .venv/bin/activate
     python scripts/watch_inbox.py --doc 003cb3da-c1b0-42a3-8155-a24749d80fe7
 
-Then send any email to anthill@agentmail.to from your normal mail client and
-watch the agent run live.
+Then send any email to anthill@agentmail.to from your normal mail client.
+Within ~5 seconds the agent will run and you'll see the SSE log here.
 
 Prereqs:
   - Backend running on :8000      (uv run fastapi dev)
@@ -37,9 +36,7 @@ import asyncio
 import json
 import os
 import re
-import signal
 import sys
-import time
 from pathlib import Path
 from typing import Any
 
@@ -80,26 +77,6 @@ def _backend_headers() -> dict[str, str]:
     if BACKEND_SECRET:
         h["X-Anthill-Secret"] = BACKEND_SECRET
     return h
-
-
-def _to_dict(obj: Any) -> dict[str, Any]:
-    if isinstance(obj, dict):
-        return obj
-    for attr in ("model_dump", "dict", "to_dict"):
-        fn = getattr(obj, attr, None)
-        if callable(fn):
-            try:
-                return fn()  # type: ignore[no-any-return]
-            except TypeError:
-                continue
-    return {k: getattr(obj, k) for k in dir(obj) if not k.startswith("_")}
-
-
-def _pick(d: dict[str, Any], *keys: str) -> Any:
-    for k in keys:
-        if k in d and d[k] not in (None, "", []):
-            return d[k]
-    return None
 
 
 def _route_doc_id(subject: str | None, default_doc: str | None) -> str | None:
@@ -193,71 +170,21 @@ def _print_event(kind: str, ev: dict[str, Any]) -> None:
         print(f"     · error: {msg}")
 
 
-async def _handle_event(
-    raw_evt: Any,
+async def _process_message(
     *,
+    msg: agentmail_client.InboundMessage,
     inbox_id: str,
     default_doc: str | None,
-    seen_ids: set[str],
     http: httpx.AsyncClient,
     reply: bool,
     max_actions: int,
 ) -> None:
-    """One websocket event → at most one agent run.
-
-    The AgentMail SDK yields typed event objects off the socket iterator:
-    `MessageReceivedEvent`, `MessageSentEvent`, `Subscribed`, `Error`, etc.
-    We only care about `MessageReceivedEvent`. Everything else is logged
-    (so subscription confirmations show up) and otherwise ignored.
-    """
-    # Lazy imports so the module loads even when the SDK is missing.
-    from agentmail import MessageReceivedEvent  # type: ignore[import-not-found]
-    from agentmail.websockets.types.subscribed import (  # type: ignore[import-not-found]
-        Subscribed,
-    )
-    from agentmail.websockets.types.error import (  # type: ignore[import-not-found]
-        Error as WsError,
-    )
-
-    if isinstance(raw_evt, Subscribed):
-        print(f"[ws] ✓ subscribed ack: {_to_dict(raw_evt)}")
-        return
-    if isinstance(raw_evt, WsError):
-        print(f"[ws] ✗ server error: {_to_dict(raw_evt)}")
-        return
-    if not isinstance(raw_evt, MessageReceivedEvent):
-        # Sent/Delivered/Bounced/etc. aren't actionable here.
-        kind = type(raw_evt).__name__
-        print(f"[ws] · ignoring {kind}")
-        return
-
-    msg = raw_evt.message
-    msg_dict = _to_dict(msg)
-
-    message_id = str(_pick(msg_dict, "message_id", "messageId", "id") or "").strip()
-    if not message_id:
-        print(f"[ws] · MessageReceivedEvent without message_id: {msg_dict}")
-        return
-
-    msg_inbox = str(_pick(msg_dict, "inbox_id", "inboxId") or "").strip()
-    if msg_inbox and msg_inbox != inbox_id:
-        # Defensive: ignore events for other inboxes (we only subscribed to one
-        # but the SDK may surface others if a pod-level subscribe was added).
-        print(f"[ws] · skipping cross-inbox message {message_id} (inbox={msg_inbox})")
-        return
-
-    if message_id in seen_ids:
-        return
-    seen_ids.add(message_id)
-
-    subject = _pick(msg_dict, "subject")
-    sender = _pick(msg_dict, "from", "from_", "sender", "from_address")
     print()
-    print(f"📬 incoming  message_id={message_id}")
-    print(f"             from={sender!r}")
-    print(f"             subject={subject!r}")
+    print(f"📬 incoming  message_id={msg.message_id}")
+    print(f"             from={msg.from_!r}")
+    print(f"             subject={msg.subject!r}")
 
-    doc_id = _route_doc_id(subject, default_doc)
+    doc_id = _route_doc_id(msg.subject, default_doc)
     if not doc_id:
         print(
             "     · ⚠ no document_id (no subject tag and no --doc default); "
@@ -271,9 +198,9 @@ async def _handle_event(
             client=http,
             document_id=doc_id,
             inbox_id=inbox_id,
-            message_id=message_id,
-            sender_email=sender if isinstance(sender, str) else None,
-            sender_name=None,  # AgentMail's `from` already includes display name
+            message_id=msg.message_id,
+            sender_email=msg.from_,
+            sender_name=None,
             reply=reply,
             max_actions=max_actions,
         )
@@ -287,75 +214,7 @@ async def _handle_event(
         await _stream_run(http, run_id)
     except Exception as e:  # noqa: BLE001
         print(f"     · ✗ stream broke: {e}")
-    print(f"📭 done with {message_id}\n")
-
-
-def _resolve_inbox_sync(
-    address: str,
-    *,
-    create_if_missing: bool,
-) -> agentmail_client.InboxInfo:
-    """Look up an inbox by address (sync, runs once at startup)."""
-
-    async def _go() -> agentmail_client.InboxInfo:
-        found = await agentmail_client.find_inbox_by_address(address)
-        if found:
-            return found
-        if not create_if_missing:
-            raise SystemExit(
-                f"AgentMail inbox {address!r} not found. Pass --create to make it, "
-                f"or visit console.agentmail.to to create it manually."
-            )
-        # Use the local-part as the client_id seed for idempotency.
-        local = address.split("@", 1)[0]
-        print(f"[mail] inbox {address!r} not found — creating idempotently as {local!r}")
-        return await agentmail_client.get_or_create_inbox(
-            client_id=f"anthill-watch-{local}",
-            display_name=f"Anthill watcher ({local})",
-        )
-
-    return asyncio.run(_go())
-
-
-def _open_websocket(api_key: str) -> Any:
-    """Return an open AgentMail WebSocket client (sync context manager protocol)."""
-    from agentmail import AgentMail  # type: ignore[import-not-found]
-
-    client = AgentMail(api_key=api_key)
-    # `connect()` is itself a context manager — call __enter__ explicitly so
-    # we can keep the socket alive across the asyncio loop below.
-    cm = client.websockets.connect()
-    socket = cm.__enter__()
-    return cm, socket
-
-
-def _build_subscribe(inbox_id: str) -> Any:
-    from agentmail.websockets import Subscribe  # type: ignore[import-not-found]
-
-    return Subscribe(event_types=["message.received"], inbox_ids=[inbox_id])
-
-
-async def _pump_socket(
-    socket: Any,
-    queue: asyncio.Queue,
-    stop: asyncio.Event,
-) -> None:
-    """Producer thread → asyncio queue. Pulls events off the sync socket."""
-    loop = asyncio.get_running_loop()
-
-    def _producer() -> None:
-        try:
-            for evt in socket:  # blocking iterator, terminates on close
-                if stop.is_set():
-                    return
-                # Hand to the loop without blocking if the queue is full.
-                loop.call_soon_threadsafe(queue.put_nowait, evt)
-        except Exception as e:  # noqa: BLE001
-            loop.call_soon_threadsafe(queue.put_nowait, e)
-        finally:
-            loop.call_soon_threadsafe(queue.put_nowait, None)
-
-    await asyncio.to_thread(_producer)
+    print(f"📭 done with {msg.message_id}\n")
 
 
 async def main_async(args: argparse.Namespace) -> int:
@@ -391,57 +250,64 @@ async def main_async(args: argparse.Namespace) -> int:
             "subject tags will be processed"
         )
 
-    print(f"[ws] connecting to AgentMail websocket for inbox {inbox.inbox_id}…")
-    cm, socket = _open_websocket(api_key)
+    # Pre-warm: ignore everything already in the inbox so old emails don't
+    # all fire when we connect. We only act on messages whose ids appear AFTER
+    # this initial baseline.
+    seen_ids: set[str] = set()
     try:
-        socket.send_subscribe(_build_subscribe(inbox.inbox_id))
-        print("[ws] subscribed to message.received; waiting for emails. (Ctrl-C to quit.)")
+        existing = await agentmail_client.list_messages(inbox.inbox_id, limit=100)
+        for m in existing:
+            seen_ids.add(m.message_id)
+        print(
+            f"[poll] baseline: {len(seen_ids)} pre-existing message(s); "
+            f"only acting on emails received from now on."
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"[poll] could not list existing messages (continuing anyway): {e}")
 
-        queue: asyncio.Queue = asyncio.Queue()
-        stop = asyncio.Event()
-        pump_task = asyncio.create_task(_pump_socket(socket, queue, stop))
-        seen_ids: set[str] = set()
+    print(
+        f"[poll] polling every {args.poll}s; send an email to "
+        f"{inbox.address!r} to trigger the agent. (Ctrl-C to quit.)"
+    )
 
-        # Pre-warm: ignore everything already in the inbox so old emails don't
-        # all fire when we connect. We seed `seen_ids` with the most recent
-        # message ids, then only act on new ones the socket delivers.
-        try:
-            existing = await agentmail_client.list_messages(inbox.inbox_id, limit=50)
-            for m in existing:
+    async with httpx.AsyncClient(timeout=300.0) as http:
+        tick = 0
+        while True:
+            tick += 1
+            try:
+                msgs = await agentmail_client.list_messages(
+                    inbox.inbox_id, limit=25
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"[poll] list failed (will retry): {e}")
+                await asyncio.sleep(args.poll)
+                continue
+
+            new = [m for m in msgs if m.message_id not in seen_ids]
+            if args.verbose and not new:
+                print(
+                    f"[poll #{tick}] no new messages "
+                    f"(inbox has {len(msgs)})"
+                )
+
+            # Process oldest-first so a backlog applies in the right order.
+            for m in reversed(new):
                 seen_ids.add(m.message_id)
-            print(f"[ws] ignoring {len(seen_ids)} pre-existing message(s) in this inbox")
-        except Exception as e:  # noqa: BLE001
-            print(f"[ws] could not list existing messages (continuing anyway): {e}")
-
-        async with httpx.AsyncClient(timeout=300.0) as http:
-            while True:
-                evt = await queue.get()
-                if evt is None:
-                    break
-                if isinstance(evt, Exception):
-                    print(f"[ws] socket error: {evt}")
-                    break
                 # Run handler in the background so a slow agent run doesn't
-                # block draining the queue (multiple emails in quick succession).
+                # block the next poll. Multiple emails arriving back-to-back
+                # will run concurrently; the bridge serializes the writes.
                 asyncio.create_task(
-                    _handle_event(
-                        evt,
+                    _process_message(
+                        msg=m,
                         inbox_id=inbox.inbox_id,
                         default_doc=default_doc,
-                        seen_ids=seen_ids,
                         http=http,
                         reply=not args.no_reply,
                         max_actions=args.max_actions,
                     )
                 )
-        stop.set()
-        await pump_task
-    finally:
-        try:
-            cm.__exit__(None, None, None)
-        except Exception:  # noqa: BLE001
-            pass
-    return 0
+
+            await asyncio.sleep(args.poll)
 
 
 def main() -> int:
@@ -472,20 +338,24 @@ def main() -> int:
         action="store_true",
         help="If the inbox doesn't exist, create it idempotently from the local-part.",
     )
+    ap.add_argument(
+        "--poll",
+        type=float,
+        default=5.0,
+        help="Seconds between inbox polls (default 5).",
+    )
+    ap.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="Print a heartbeat on every poll, even when nothing new arrived.",
+    )
     args = ap.parse_args()
-
-    # Graceful Ctrl-C — asyncio.run already converts KeyboardInterrupt to a
-    # cancel cascade, but we install a handler so the WS context exits cleanly.
-    def _on_sigint(*_a: Any) -> None:  # noqa: ANN001
-        print("\n[ws] interrupted; shutting down")
-        # Default handler will raise KeyboardInterrupt; re-raise.
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGINT, _on_sigint)
 
     try:
         return asyncio.run(main_async(args))
     except KeyboardInterrupt:
+        print("\n[poll] interrupted; bye.")
         return 130
 
 
